@@ -6,8 +6,11 @@ use crate::render::PageRenderer;
 use eframe::egui;
 use std::path::PathBuf;
 mod panels;
+mod theme;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x2F, 0x6F, 0xED);
+/// Destructive-action fill (Delete box).
+pub const DANGER: egui::Color32 = egui::Color32::from_rgb(0xD9, 0x34, 0x3B);
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 4.0;
 
@@ -33,7 +36,7 @@ pub struct TypewriterApp {
 
 impl TypewriterApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        apply_theme(&cc.egui_ctx);
+        theme::apply_theme(&cc.egui_ctx);
         Self {
             pdf_path: None,
             pdf_doc: None,
@@ -197,14 +200,59 @@ impl eframe::App for TypewriterApp {
 
 impl TypewriterApp {
     fn canvas(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| self.canvas_content(ctx, ui));
+        let frame = egui::Frame::central_panel(ctx.style().as_ref())
+            .fill(ctx.style().visuals.extreme_bg_color);
+        egui::CentralPanel::default()
+            .frame(frame)
+            .show(ctx, |ui| self.canvas_content(ctx, ui));
+    }
+
+    /// Welcome screen shown before any PDF is loaded.
+    fn empty_state(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space((ui.available_height() * 0.22).max(24.0));
+            ui.label(egui::RichText::new("✎").size(56.0).color(ACCENT));
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new("Typewriter PDF").size(30.0).strong());
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Open a PDF, switch to Type mode, and click the page to write on it.",
+                )
+                .size(15.0)
+                .color(ui.visuals().weak_text_color()),
+            );
+            ui.add_space(20.0);
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Open a PDF…")
+                            .size(16.0)
+                            .strong()
+                            .color(egui::Color32::WHITE),
+                    )
+                    .fill(ACCENT)
+                    .stroke(egui::Stroke::NONE)
+                    .min_size(egui::vec2(200.0, 48.0))
+                    .corner_radius(12),
+                )
+                .on_hover_text("Open a PDF  (Ctrl+O)")
+                .clicked()
+            {
+                self.open_dialog();
+            }
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new("Ctrl+O to open  ·  Ctrl+S to save  ·  Esc to navigate")
+                    .size(12.5)
+                    .color(ui.visuals().weak_text_color()),
+            );
+        });
     }
 
     fn canvas_content(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let (Some(pdf), Some(doc)) = (self.hayro_pdf.as_ref(), self.pdf_doc.as_ref()) else {
-            ui.centered_and_justified(|ui| {
-                ui.heading("Open a PDF, enable Type mode, and click the page to write.");
-            });
+            self.empty_state(ui);
             return;
         };
         let page = self.page.min(doc.page_count().saturating_sub(1));
@@ -239,13 +287,25 @@ impl TypewriterApp {
                 let page_size = egui::vec2(dim_w * zoom, dim_h * zoom);
                 let (page_rect, page_resp) =
                     ui.allocate_exact_size(page_size, egui::Sense::click_and_drag());
-                let painter = ui.painter_at(page_rect.expand(8.0));
+                let painter = ui.painter_at(page_rect.expand(16.0));
+                // Layered soft shadow so the page floats over the canvas.
                 painter.rect_filled(
-                    page_rect.translate(egui::vec2(4.0, 4.0)),
-                    2.0,
-                    egui::Color32::from_black_alpha(40),
+                    page_rect.translate(egui::vec2(0.0, 10.0)).expand(2.0),
+                    8.0,
+                    egui::Color32::from_black_alpha(28),
                 );
-                painter.rect_filled(page_rect, 0.0, egui::Color32::WHITE);
+                painter.rect_filled(
+                    page_rect.translate(egui::vec2(0.0, 4.0)),
+                    6.0,
+                    egui::Color32::from_black_alpha(36),
+                );
+                painter.rect_filled(page_rect, 4.0, egui::Color32::WHITE);
+                painter.rect_stroke(
+                    page_rect,
+                    4.0,
+                    egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(36)),
+                    egui::StrokeKind::Outside,
+                );
                 if let Some(texture) = &texture {
                     painter.image(
                         texture.id(),
@@ -353,31 +413,5 @@ impl TypewriterApp {
             self.overlays.add(page, x_pt, y_top_pt);
             self.focus_editor = true;
         }
-    }
-}
-
-fn apply_theme(ctx: &egui::Context) {
-    let mut light = egui::Visuals::light();
-    light.panel_fill = egui::Color32::from_rgb(0xF5, 0xF1, 0xE8);
-    light.window_fill = egui::Color32::from_rgb(0xF5, 0xF1, 0xE8);
-    light.selection.bg_fill = ACCENT;
-    light.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
-    light.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-    light.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
-    light.widgets.active.corner_radius = egui::CornerRadius::same(8);
-    ctx.set_visuals_of(egui::Theme::Light, light);
-    let mut dark = egui::Visuals::dark();
-    dark.panel_fill = egui::Color32::from_rgb(0x1E, 0x1F, 0x24);
-    dark.window_fill = egui::Color32::from_rgb(0x1E, 0x1F, 0x24);
-    dark.selection.bg_fill = ACCENT;
-    dark.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
-    dark.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
-    dark.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
-    dark.widgets.active.corner_radius = egui::CornerRadius::same(8);
-    ctx.set_visuals_of(egui::Theme::Dark, dark);
-    for theme in [egui::Theme::Light, egui::Theme::Dark] {
-        ctx.style_mut_of(theme, |style| {
-            style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        });
     }
 }
