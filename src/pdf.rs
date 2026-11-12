@@ -5,7 +5,7 @@
 //! `add_to_page_content`. Existing Helvetica fonts are reused; a new
 //! standard-14 Helvetica is added only when the page has none.
 
-use crate::overlay::{ASCENT, LEADING, OverlayState, OverlayText};
+use crate::overlay::{ASCENT, BoxKind, LEADING, OverlayState, OverlayText};
 use anyhow::{Context, Result, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat, dictionary};
@@ -74,13 +74,40 @@ impl PdfDoc {
                 by_page.entry(item.page).or_default().push(item);
             }
         }
+        let sig_face = if overlays
+            .items
+            .iter()
+            .any(|item| item.kind == BoxKind::Signature && !item.is_empty())
+        {
+            Some(signature_font::face()?)
+        } else {
+            None
+        };
         for (page, boxes) in by_page {
             let page_id = self.page_ids[page];
-            let alias = self.ensure_helvetica(page_id)?;
             let page_box = self.boxes_pt[page];
             let mut operations = Vec::new();
-            for item in boxes {
-                operations.extend(box_operations(item, &alias, page_box));
+            let text_boxes: Vec<&OverlayText> = boxes
+                .iter()
+                .copied()
+                .filter(|item| item.kind == BoxKind::Text)
+                .collect();
+            if !text_boxes.is_empty() {
+                let alias = self.ensure_helvetica(page_id)?;
+                for item in text_boxes {
+                    operations.extend(box_operations(item, &alias, page_box, None));
+                }
+            }
+            let sig_boxes: Vec<&OverlayText> = boxes
+                .iter()
+                .copied()
+                .filter(|item| item.kind == BoxKind::Signature)
+                .collect();
+            if let (false, Some(face)) = (sig_boxes.is_empty(), sig_face.as_ref()) {
+                let alias = self.ensure_signature(page_id, face, &sig_boxes)?;
+                for item in sig_boxes {
+                    operations.extend(box_operations(item, &alias, page_box, Some(face)));
+                }
             }
             self.doc
                 .add_to_page_content(page_id, Content { operations })
@@ -128,6 +155,44 @@ impl PdfDoc {
         insert_font_entry(&mut self.doc, page_id, alias.as_bytes(), font_id)?;
         Ok(alias)
     }
+
+    /// Return the resource alias of the embedded Momo Signature font on
+    /// `page_id`, embedding it (once per page) if not already present.
+    fn ensure_signature(
+        &mut self,
+        page_id: ObjectId,
+        face: &ttf_parser::Face<'_>,
+        boxes: &[&OverlayText],
+    ) -> Result<String> {
+        let fonts = self
+            .doc
+            .get_page_fonts(page_id)
+            .context("failed to read page fonts")?;
+        for (name, font) in &fonts {
+            if let Ok(base) = font.get(b"BaseFont")
+                && base.as_name().is_ok_and(|n| n == b"MomoSignature")
+            {
+                return Ok(String::from_utf8_lossy(name).into_owned());
+            }
+        }
+        let alias = free_alias(&fonts, "F_SIG");
+        signature_font::ensure_signature_font(&mut self.doc, page_id, face, boxes, alias)
+    }
+}
+
+/// `base` if free on the page, else `base1`, `base2`, ...
+fn free_alias(fonts: &std::collections::BTreeMap<Vec<u8>, &Dictionary>, base: &str) -> String {
+    if !fonts.contains_key(base.as_bytes()) {
+        return base.to_string();
+    }
+    let mut n = 1_u32;
+    loop {
+        let candidate = format!("{base}{n}");
+        if !fonts.contains_key(candidate.as_bytes()) {
+            return candidate;
+        }
+        n += 1;
+    }
 }
 
 /// Top-left-origin baseline: PDF y of the first line's baseline.
@@ -141,6 +206,7 @@ fn box_operations(
     item: &OverlayText,
     alias: &str,
     page_box: (f32, f32, f32, f32),
+    sig_face: Option<&ttf_parser::Face<'_>>,
 ) -> Vec<Operation> {
     let (x0, _y0, _x1, y1) = page_box;
     let size = item.size_pt;
@@ -169,17 +235,24 @@ fn box_operations(
             ],
         ),
     ];
-    for (idx, line) in winansi_lines(&item.text).into_iter().enumerate() {
+    let lines: Vec<Object> = match (item.kind, sig_face) {
+        (BoxKind::Signature, Some(face)) => vec![Object::String(
+            signature_font::encode_hex(face, &item.signature_line()),
+            StringFormat::Hexadecimal,
+        )],
+        _ => winansi_lines(&item.text)
+            .into_iter()
+            .map(|line| Object::String(line, StringFormat::Literal))
+            .collect(),
+    };
+    for (idx, line) in lines.into_iter().enumerate() {
         if idx > 0 {
             ops.push(Operation::new(
                 "Td",
                 vec![Object::Real(0.0), Object::Real(-leading)],
             ));
         }
-        ops.push(Operation::new(
-            "Tj",
-            vec![Object::String(line, StringFormat::Literal)],
-        ));
+        ops.push(Operation::new("Tj", vec![line]));
     }
     ops.push(Operation::new("ET", vec![]));
     ops.push(Operation::new("Q", vec![]));
@@ -410,6 +483,8 @@ fn insert_font_entry(
     }
     Ok(())
 }
+
+mod signature_font;
 
 #[cfg(test)]
 mod tests;

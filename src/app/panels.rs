@@ -6,6 +6,7 @@
 //! only the accent / danger fills are hard-coded brand colors.
 
 use super::{ACCENT, DANGER, MAX_ZOOM, MIN_ZOOM, Mode, TypewriterApp};
+use crate::overlay::BoxKind;
 use eframe::egui;
 
 /// Height of every primary toolbar / sidebar button.
@@ -224,6 +225,12 @@ impl TypewriterApp {
         group(ui).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                if mode_button(ui, "✍  Sign", self.mode == Mode::Sign)
+                    .on_hover_text("Click the page to place a signature")
+                    .clicked()
+                {
+                    self.mode = Mode::Sign;
+                }
                 if mode_button(ui, "✎  Type", self.mode == Mode::Type)
                     .on_hover_text("Click the page to add text")
                     .clicked()
@@ -308,7 +315,7 @@ impl TypewriterApp {
     fn box_list(&mut self, ui: &mut egui::Ui) {
         let page_items = self.overlays.by_page(self.page);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Text boxes").size(18.0).strong());
+            ui.label(egui::RichText::new("Boxes").size(18.0).strong());
             pill(ui, format!("{}", page_items.len()));
         });
         ui.label(
@@ -320,8 +327,8 @@ impl TypewriterApp {
         if page_items.is_empty() {
             hint_card(
                 ui,
-                "No text here yet.",
-                "Switch to Type mode and click anywhere on the page.",
+                "Nothing here yet.",
+                "Switch to Type or Sign mode and click anywhere on the page.",
             );
         }
         let mut select: Option<usize> = None;
@@ -350,7 +357,11 @@ impl TypewriterApp {
                 .inner_margin(egui::Margin::symmetric(10, 6))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let label = format!("{first_line}  ·  {:.0} pt", item.size_pt);
+                        let marker = match item.kind {
+                            BoxKind::Signature => "✍ ",
+                            BoxKind::Text => "",
+                        };
+                        let label = format!("{marker}{first_line}  ·  {:.0} pt", item.size_pt);
                         if ui
                             .add_sized(
                                 egui::vec2((ui.available_width() - 44.0).max(80.0), 34.0),
@@ -392,7 +403,7 @@ impl TypewriterApp {
             hint_card(
                 ui,
                 "Nothing selected.",
-                "Click a text box — or click the page in Type mode to add one.",
+                "Click a box — or click the page in Type/Sign mode to add one.",
             );
             return;
         };
@@ -407,22 +418,46 @@ impl TypewriterApp {
             .corner_radius(12)
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new("Text").size(13.0).strong());
+                let is_signature = item.kind == BoxKind::Signature;
+                ui.label(
+                    egui::RichText::new(if is_signature { "Signature" } else { "Text" })
+                        .size(13.0)
+                        .strong(),
+                );
                 ui.add_space(4.0);
-                let edit = ui.add_sized(
-                    egui::vec2(ui.available_width(), 110.0),
+                let editor = if is_signature {
+                    egui::TextEdit::singleline(&mut item.text).hint_text("Type your name…")
+                } else {
                     egui::TextEdit::multiline(&mut item.text)
                         .hint_text("Type here… (? replaces non-WinAnsi glyphs)")
-                        .desired_rows(5),
+                        .desired_rows(5)
+                };
+                let edit = ui.add_sized(
+                    egui::vec2(
+                        ui.available_width(),
+                        if is_signature { 44.0 } else { 110.0 },
+                    ),
+                    editor,
                 );
-                if self.focus_editor {
-                    edit.request_focus();
-                    self.focus_editor = false;
+                if is_signature {
+                    ui.add_space(8.0);
+                    let ink = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
+                    crate::signature::draw_preview(
+                        ui,
+                        &item.signature_line(),
+                        ink,
+                        item.text.trim().is_empty(),
+                    );
                 }
                 changed |= edit.changed();
                 ui.add_space(10.0);
+                let size_range = if is_signature {
+                    16.0..=64.0
+                } else {
+                    8.0..=36.0
+                };
                 let size_resp = ui.add(
-                    egui::Slider::new(&mut item.size_pt, 8.0..=36.0)
+                    egui::Slider::new(&mut item.size_pt, size_range)
                         .suffix(" pt")
                         .text("Size"),
                 );

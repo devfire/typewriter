@@ -4,6 +4,7 @@ mod app;
 mod overlay;
 mod pdf;
 mod render;
+mod signature;
 
 use eframe::egui;
 

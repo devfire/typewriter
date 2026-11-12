@@ -1,9 +1,23 @@
 //! Light/dark palettes, typography, and widget geometry.
 
 use super::ACCENT;
+use crate::signature;
 use eframe::egui;
+use std::sync::Arc;
 
 pub(super) fn apply_theme(ctx: &egui::Context) {
+    // Signature preview font; first (only) entry of its own family so the
+    // UI's proportional text is untouched.
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        signature::FONT_KEY.to_string(),
+        Arc::new(egui::FontData::from_static(signature::FONT_BYTES)),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(signature::FONT_FAMILY.into()),
+        vec![signature::FONT_KEY.to_string()],
+    );
+    ctx.set_fonts(fonts);
     for (theme, dark) in [(egui::Theme::Light, false), (egui::Theme::Dark, true)] {
         ctx.set_visuals_of(theme, themed_visuals(dark));
         ctx.style_mut_of(theme, |style| {

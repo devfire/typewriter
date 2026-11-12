@@ -23,6 +23,7 @@ fn baseline_uses_ascent_not_full_size() {
 #[test]
 fn two_lines_produce_two_tj_and_one_td() {
     let item = OverlayText {
+        kind: BoxKind::Text,
         page: 0,
         x_pt: 10.0,
         y_top_pt: 20.0,
@@ -30,7 +31,7 @@ fn two_lines_produce_two_tj_and_one_td() {
         size_pt: 12.0,
         color: [0, 0, 255],
     };
-    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0));
+    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
     assert_eq!(
         operators,
@@ -86,7 +87,7 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
     let (mut pdf, out) = fixture_pdf();
     let page_id = pdf.page_ids[0];
     let mut overlays = OverlayState::default();
-    let idx = overlays.add(0, 72.0, 72.0);
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.items[idx].text = "Hello".to_string();
     pdf.bake_and_save(&mut overlays, &out).unwrap();
     assert!(overlays.items.is_empty());
@@ -122,4 +123,34 @@ fn existing_ftw_alias_is_not_overwritten() {
     assert!(fonts.contains_key(b"F_TW1".as_slice()));
     // Existing Helvetica is reused on the second call.
     assert_eq!(pdf.ensure_helvetica(page_id).unwrap(), "F_TW1");
+}
+
+#[test]
+fn signature_bake_embeds_momo_and_is_extractable() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
+    overlays.items[idx].text = "Jane Doe".to_string();
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    assert!(overlays.items.is_empty());
+    let bytes = std::fs::read(&out).unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("MomoSignature"), "Type0 font not embedded");
+    assert!(text.contains("Identity-H"));
+    assert!(text.contains("FontFile2"), "font program not embedded");
+    // ToUnicode CMap makes the baked signature extractable as text.
+    let extracted = pdf.doc.extract_text(&[1]).unwrap();
+    assert!(
+        extracted.contains("Jane Doe"),
+        "signature not extractable: {extracted:?}"
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn signature_encode_uses_two_byte_glyph_ids() {
+    let face = signature_font::face().unwrap();
+    let encoded = signature_font::encode_hex(&face, "Ab");
+    assert_eq!(encoded.len(), 4);
+    assert_ne!(&encoded[0..2], &[0, 0], "capital A mapped to .notdef");
 }

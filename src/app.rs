@@ -18,6 +18,7 @@ const MAX_ZOOM: f32 = 4.0;
 enum Mode {
     Navigate,
     Type,
+    Sign,
 }
 
 pub struct TypewriterApp {
@@ -217,7 +218,7 @@ impl TypewriterApp {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(
-                    "Open a PDF, switch to Type mode, and click the page to write on it.",
+                    "Open a PDF, switch to Type or Sign mode, and click the page to write or sign.",
                 )
                 .size(15.0)
                 .color(ui.visuals().weak_text_color()),
@@ -343,7 +344,7 @@ impl TypewriterApp {
                 .map(|l| l.chars().count())
                 .max()
                 .unwrap_or(0) as f32;
-            let width_pt = (max_chars * item.size_pt * 0.6).max(48.0);
+            let width_pt = box_width_pt(item, max_chars);
             let height_pt = line_count * overlay::LEADING * item.size_pt;
             let rect =
                 egui::Rect::from_min_size(top_left, egui::vec2(width_pt * zoom, height_pt * zoom));
@@ -377,8 +378,9 @@ impl TypewriterApp {
                 );
             }
             let color = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
-            let font = egui::FontId::proportional(item.size_pt * zoom);
-            for (line_idx, line) in item.text.lines().enumerate() {
+            let font = box_font(item, zoom);
+            let display_lines = box_display_lines(item);
+            for (line_idx, line) in display_lines.iter().enumerate() {
                 let y = rect.min.y
                     + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom
                     + overlay::ASCENT * item.size_pt * zoom;
@@ -397,21 +399,53 @@ impl TypewriterApp {
                         rect.min.y + overlay::ASCENT * item.size_pt * zoom,
                     ),
                     egui::Align2::LEFT_BOTTOM,
-                    "Type here\u{2026}",
+                    match item.kind {
+                        crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
+                        crate::overlay::BoxKind::Text => "Type here\u{2026}",
+                    },
                     font.clone(),
                     egui::Color32::GRAY,
                 );
             }
         }
-        // Click on empty page area in Type mode creates a box.
-        if self.mode == Mode::Type
+        // Click on empty page area creates a box in Type / Sign mode.
+        let new_kind = match self.mode {
+            Mode::Type => Some(crate::overlay::BoxKind::Text),
+            Mode::Sign => Some(crate::overlay::BoxKind::Signature),
+            Mode::Navigate => None,
+        };
+        if let Some(kind) = new_kind
             && page_resp.clicked()
             && let Some(pos) = page_resp.interact_pointer_pos()
             && !box_rects.iter().any(|r| r.contains(pos))
         {
             let (x_pt, y_top_pt) = overlay::screen_to_pdf_top(pos, page_rect, zoom);
-            self.overlays.add(page, x_pt, y_top_pt);
+            self.overlays.add(page, x_pt, y_top_pt, kind);
             self.focus_editor = true;
         }
+    }
+}
+
+/// On-page box width in points, estimated from its longest line.
+fn box_width_pt(item: &crate::overlay::OverlayText, max_chars: f32) -> f32 {
+    match item.kind {
+        crate::overlay::BoxKind::Signature => (max_chars * item.size_pt * 0.45).max(96.0),
+        crate::overlay::BoxKind::Text => (max_chars * item.size_pt * 0.6).max(48.0),
+    }
+}
+
+/// Preview font for a box: Momo Signature for signatures, proportional else.
+fn box_font(item: &crate::overlay::OverlayText, zoom: f32) -> egui::FontId {
+    match item.kind {
+        crate::overlay::BoxKind::Signature => crate::signature::font_id(item.size_pt * zoom),
+        crate::overlay::BoxKind::Text => egui::FontId::proportional(item.size_pt * zoom),
+    }
+}
+
+/// Lines as drawn: signatures are always a single flattened line.
+fn box_display_lines(item: &crate::overlay::OverlayText) -> Vec<String> {
+    match item.kind {
+        crate::overlay::BoxKind::Signature => vec![item.signature_line()],
+        crate::overlay::BoxKind::Text => item.text.lines().map(ToString::to_string).collect(),
     }
 }

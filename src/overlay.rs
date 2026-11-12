@@ -11,10 +11,19 @@ pub const ASCENT: f32 = 0.8;
 /// Line spacing as a multiple of the font size.
 pub const LEADING: f32 = 1.2;
 
+/// What a box contains: ordinary typed text, or a typed signature
+/// rendered (preview and baked PDF) in the Momo Signature script font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxKind {
+    Text,
+    Signature,
+}
+
 /// One typewriter text box. `x_pt`/`y_top_pt` are PDF points, with
 /// `y_top_pt` measured from the TOP of the page to the top of the em box.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayText {
+    pub kind: BoxKind,
     pub page: usize,
     pub x_pt: f32,
     pub y_top_pt: f32,
@@ -24,15 +33,28 @@ pub struct OverlayText {
 }
 
 impl OverlayText {
-    pub fn new(page: usize, x_pt: f32, y_top_pt: f32) -> Self {
+    pub fn new(page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> Self {
+        let (size_pt, color) = match kind {
+            BoxKind::Text => (12.0, [0, 0, 0]),
+            // Larger by default, in dark-blue pen ink.
+            BoxKind::Signature => (32.0, [0x20, 0x2F, 0x6B]),
+        };
         Self {
+            kind,
             page,
             x_pt,
             y_top_pt,
             text: String::new(),
-            size_pt: 12.0,
-            color: [0, 0, 0],
+            size_pt,
+            color,
         }
+    }
+
+    /// The signature as one line: signatures never wrap, so embedded
+    /// newlines (pasted text) collapse to spaces.
+    #[must_use]
+    pub fn signature_line(&self) -> String {
+        self.text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     pub fn is_empty(&self) -> bool {
@@ -53,8 +75,9 @@ pub struct OverlayState {
 
 impl OverlayState {
     /// Insert a new empty box and select it. Returns its index.
-    pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32) -> usize {
-        self.items.push(OverlayText::new(page, x_pt, y_top_pt));
+    pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> usize {
+        self.items
+            .push(OverlayText::new(page, x_pt, y_top_pt, kind));
         let idx = self.items.len() - 1;
         self.selected = Some(idx);
         self.dirty = true;
@@ -160,7 +183,7 @@ mod tests {
     #[test]
     fn add_selects_and_remove_clears_selection() {
         let mut state = OverlayState::default();
-        let idx = state.add(0, 10.0, 20.0);
+        let idx = state.add(0, 10.0, 20.0, BoxKind::Text);
         assert_eq!(state.selected, Some(idx));
         assert!(state.dirty);
         state.remove(idx);

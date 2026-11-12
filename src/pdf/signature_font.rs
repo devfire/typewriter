@@ -1,0 +1,154 @@
+//! Embedding Momo Signature into baked PDFs as a Type0 font.
+//!
+//! A script font cannot use the standard-14/WinAnsi path the text boxes
+//! use: the font file itself must travel with the document. Characters
+//! are encoded as two-byte CIDs equal to their TrueType glyph ids
+//! (`Identity-H`), widths come from the font's `hmtx` table, and a
+//! A `ToUnicode` `CMap` keeps the baked signature copy/paste-able.
+
+use super::insert_font_entry;
+use crate::overlay::OverlayText;
+use crate::signature::FONT_BYTES;
+use anyhow::{Context, Result};
+use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use ttf_parser::Face;
+
+/// Parsed Momo face over the embedded static bytes.
+pub(super) fn face() -> Result<Face<'static>> {
+    Face::parse(FONT_BYTES, 0).context("failed to parse embedded Momo Signature font")
+}
+
+/// Glyph id for `c`, falling back to `?` and finally to `.notdef` (0).
+fn glyph_id(face: &Face<'_>, c: char) -> u16 {
+    face.glyph_index(c)
+        .or_else(|| face.glyph_index('?'))
+        .map_or(0, |g| g.0)
+}
+
+/// Encode one signature line as `Identity-H` bytes (big-endian glyph ids).
+#[must_use]
+pub(super) fn encode_hex(face: &Face<'_>, line: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(line.chars().count() * 2);
+    for c in line.chars() {
+        bytes.extend_from_slice(&glyph_id(face, c).to_be_bytes());
+    }
+    bytes
+}
+
+/// Glyphs used by `boxes`: glyph id -> (source char, advance width in
+/// 1000-unit em space; the font's units-per-em is 1000).
+fn used_glyphs(face: &Face<'_>, boxes: &[&OverlayText]) -> BTreeMap<u16, (char, i64)> {
+    let mut used = BTreeMap::new();
+    for item in boxes {
+        for c in item.signature_line().chars() {
+            let gid = glyph_id(face, c);
+            let width = face
+                .glyph_hor_advance(ttf_parser::GlyphId(gid))
+                .map_or(500, i64::from);
+            used.entry(gid).or_insert((c, width));
+        }
+    }
+    used
+}
+
+/// `ToUnicode` `CMap` text mapping glyph ids back to their source chars.
+fn to_unicode_cmap(used: &BTreeMap<u16, (char, i64)>) -> Vec<u8> {
+    let mut out = String::from(
+        "/CIDInit /ProcSet findresource begin\n\
+         12 dict begin\n\
+         begincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n\
+         /CMapType 2 def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+    );
+    // bfchar blocks accept at most 100 entries.
+    let entries: Vec<(&u16, &(char, i64))> = used.iter().collect();
+    for chunk in entries.chunks(100) {
+        writeln!(out, "{} beginbfchar", chunk.len()).expect("writing to a String cannot fail");
+        for (gid, (c, _)) in chunk {
+            let mut utf16 = [0_u16; 2];
+            let encoded = c.encode_utf16(&mut utf16);
+            let mut hex = String::with_capacity(encoded.len() * 4);
+            for unit in encoded {
+                write!(hex, "{unit:04X}").expect("writing to a String cannot fail");
+            }
+            writeln!(out, "<{gid:04X}> <{hex}>").expect("writing to a String cannot fail");
+        }
+        out.push_str("endbfchar\n");
+    }
+    out.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    out.into_bytes()
+}
+
+/// Resource alias for the embedded signature font on `page_id`, adding
+/// the Type0 font (descriptor + `CIDFont` + font stream) if absent.
+/// `alias_base` is made unique against the page's existing fonts by the
+/// caller's alias allocator; here we always use `F_SIG` numbering via
+/// `unique_alias` supplied by `super`.
+pub(super) fn ensure_signature_font(
+    doc: &mut Document,
+    page_id: ObjectId,
+    face: &Face<'_>,
+    boxes: &[&OverlayText],
+    alias: String,
+) -> Result<String> {
+    let used = used_glyphs(face, boxes);
+    let bbox = face.global_bounding_box();
+    let font_stream = Stream::new(
+        dictionary! { "Length1" => i64::try_from(FONT_BYTES.len()).unwrap_or(i64::MAX) },
+        FONT_BYTES.to_vec(),
+    );
+    let font_file_id = doc.add_object(Object::Stream(font_stream));
+    let descriptor_id = doc.add_object(dictionary! {
+        "Type" => "FontDescriptor",
+        "FontName" => "MomoSignature",
+        "Flags" => 40,
+        "FontBBox" => vec![
+            i64::from(bbox.x_min).into(),
+            i64::from(bbox.y_min).into(),
+            i64::from(bbox.x_max).into(),
+            i64::from(bbox.y_max).into(),
+        ],
+        "ItalicAngle" => 0,
+        "Ascent" => i64::from(face.ascender()),
+        "Descent" => i64::from(face.descender()),
+        "CapHeight" => i64::from(face.capital_height().unwrap_or(face.ascender())),
+        "StemV" => 80,
+        "FontFile2" => Object::Reference(font_file_id),
+    });
+    let mut widths: Vec<Object> = Vec::with_capacity(used.len() * 2);
+    for (gid, (_, width)) in &used {
+        widths.push(i64::from(*gid).into());
+        widths.push(Object::Array(vec![(*width).into()]));
+    }
+    let cid_font_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "CIDFontType2",
+        "BaseFont" => "MomoSignature",
+        "CIDSystemInfo" => dictionary! {
+            "Registry" => Object::String(b"Adobe".to_vec(), lopdf::StringFormat::Literal),
+            "Ordering" => Object::String(b"Identity".to_vec(), lopdf::StringFormat::Literal),
+            "Supplement" => 0,
+        },
+        "FontDescriptor" => Object::Reference(descriptor_id),
+        "DW" => 500,
+        "W" => Object::Array(widths),
+    });
+    let to_unicode_id = doc.add_object(Object::Stream(Stream::new(
+        Dictionary::new(),
+        to_unicode_cmap(&used),
+    )));
+    let type0_id = doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type0",
+        "BaseFont" => "MomoSignature",
+        "Encoding" => "Identity-H",
+        "DescendantFonts" => vec![Object::Reference(cid_font_id)],
+        "ToUnicode" => Object::Reference(to_unicode_id),
+    });
+    insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
+    Ok(alias)
+}
