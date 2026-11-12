@@ -30,6 +30,7 @@ fn two_lines_produce_two_tj_and_one_td() {
         text: "a\nb".to_string(),
         size_pt: 12.0,
         color: [0, 0, 255],
+        width_pt: None,
     };
     let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();

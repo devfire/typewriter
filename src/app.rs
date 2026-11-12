@@ -33,6 +33,8 @@ pub struct TypewriterApp {
     status: String,
     focus_editor: bool,
     fit_pending: bool,
+    /// Box currently being width-resized via its corner handle, if any.
+    resize_box: Option<usize>,
 }
 
 impl TypewriterApp {
@@ -50,6 +52,7 @@ impl TypewriterApp {
             status: "Open a PDF to begin.".to_string(),
             focus_editor: false,
             fit_pending: false,
+            resize_box: None,
         }
     }
 
@@ -337,19 +340,21 @@ impl TypewriterApp {
         let mut box_rects: Vec<egui::Rect> = Vec::with_capacity(boxes.len());
         for (idx, item) in &boxes {
             let top_left = overlay::pdf_top_to_screen(item.x_pt, item.y_top_pt, page_rect, zoom);
+            let font = box_font(item, zoom);
+            let display_lines = box_display_lines(item);
             let line_count = item.text.lines().count().max(1) as f32;
-            let max_chars = item
-                .text
-                .lines()
-                .map(|l| l.chars().count())
-                .max()
-                .unwrap_or(0) as f32;
-            let width_pt = box_width_pt(item, max_chars);
+            let auto_width_pt = measured_width_pt(ui, &display_lines, &font, zoom, item.kind);
+            let width_pt = item.width_pt.map_or(auto_width_pt, |w| w.max(24.0));
             let height_pt = line_count * overlay::LEADING * item.size_pt;
             let rect =
                 egui::Rect::from_min_size(top_left, egui::vec2(width_pt * zoom, height_pt * zoom));
             box_rects.push(rect);
             let selected = self.overlays.selected == Some(*idx);
+            let handle_rect =
+                egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0));
+            if selected {
+                self.resize_handle(ui, *idx, handle_rect, width_pt, zoom);
+            }
             let resp = ui.interact(
                 rect,
                 ui.id().with(("tw-box", idx)),
@@ -358,7 +363,7 @@ impl TypewriterApp {
             if resp.clicked() {
                 self.overlays.selected = Some(*idx);
             }
-            if resp.dragged() {
+            if resp.dragged() && self.resize_box != Some(*idx) {
                 self.overlays.selected = Some(*idx);
                 let delta = resp.drag_delta();
                 if let Some(current) = self.overlays.items.get_mut(*idx) {
@@ -378,33 +383,23 @@ impl TypewriterApp {
                 );
             }
             let color = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
-            let font = box_font(item, zoom);
-            let display_lines = box_display_lines(item);
-            for (line_idx, line) in display_lines.iter().enumerate() {
-                let y = rect.min.y
-                    + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom
-                    + overlay::ASCENT * item.size_pt * zoom;
-                painter.text(
-                    egui::pos2(rect.min.x, y),
-                    egui::Align2::LEFT_BOTTOM,
-                    line,
-                    font.clone(),
-                    color,
-                );
-            }
-            if item.text.is_empty() && selected {
-                painter.text(
-                    egui::pos2(
-                        rect.min.x,
-                        rect.min.y + overlay::ASCENT * item.size_pt * zoom,
-                    ),
-                    egui::Align2::LEFT_BOTTOM,
-                    match item.kind {
-                        crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
-                        crate::overlay::BoxKind::Text => "Type here\u{2026}",
-                    },
-                    font.clone(),
-                    egui::Color32::GRAY,
+            paint_box_text(
+                &painter,
+                item,
+                &display_lines,
+                &font,
+                color,
+                rect,
+                zoom,
+                selected,
+            );
+            if selected {
+                painter.rect_filled(handle_rect, 3.0, ACCENT);
+                painter.rect_stroke(
+                    handle_rect,
+                    3.0,
+                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+                    egui::StrokeKind::Outside,
                 );
             }
         }
@@ -424,14 +419,117 @@ impl TypewriterApp {
             self.focus_editor = true;
         }
     }
+
+    /// Bottom-right corner handle of a selected box: drag to set a
+    /// fixed box width, double-click to return to auto-fit.
+    fn resize_handle(
+        &mut self,
+        ui: &mut egui::Ui,
+        idx: usize,
+        handle_rect: egui::Rect,
+        width_pt: f32,
+        zoom: f32,
+    ) {
+        let resize_resp = ui
+            .interact(
+                handle_rect,
+                ui.id().with(("tw-resize", idx)),
+                egui::Sense::drag(),
+            )
+            .on_hover_text("Drag to widen/narrow the box \u{00b7} double-click for auto-fit");
+        if resize_resp.double_clicked() {
+            if let Some(current) = self.overlays.items.get_mut(idx) {
+                current.width_pt = None;
+            }
+            self.overlays.dirty = true;
+        }
+        if resize_resp.drag_started() {
+            self.resize_box = Some(idx);
+        }
+        if resize_resp.hovered() || resize_resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        if self.resize_box == Some(idx) && resize_resp.dragged() {
+            let delta_pt = resize_resp.drag_delta().x / zoom;
+            if let Some(current) = self.overlays.items.get_mut(idx) {
+                let base = current.width_pt.unwrap_or(width_pt);
+                current.width_pt = Some((base + delta_pt).max(24.0));
+            }
+            self.overlays.dirty = true;
+        }
+        if resize_resp.drag_stopped() {
+            self.resize_box = None;
+        }
+    }
 }
 
-/// On-page box width in points, estimated from its longest line.
-fn box_width_pt(item: &crate::overlay::OverlayText, max_chars: f32) -> f32 {
-    match item.kind {
-        crate::overlay::BoxKind::Signature => (max_chars * item.size_pt * 0.45).max(96.0),
-        crate::overlay::BoxKind::Text => (max_chars * item.size_pt * 0.6).max(48.0),
+/// Draw a box's lines (plus the empty-box placeholder when selected)
+/// inside `rect`.
+#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+fn paint_box_text(
+    painter: &egui::Painter,
+    item: &crate::overlay::OverlayText,
+    display_lines: &[String],
+    font: &egui::FontId,
+    color: egui::Color32,
+    rect: egui::Rect,
+    zoom: f32,
+    selected: bool,
+) {
+    for (line_idx, line) in display_lines.iter().enumerate() {
+        let y = rect.min.y
+            + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom
+            + overlay::ASCENT * item.size_pt * zoom;
+        painter.text(
+            egui::pos2(rect.min.x, y),
+            egui::Align2::LEFT_BOTTOM,
+            line,
+            font.clone(),
+            color,
+        );
     }
+    if item.text.is_empty() && selected {
+        painter.text(
+            egui::pos2(
+                rect.min.x,
+                rect.min.y + overlay::ASCENT * item.size_pt * zoom,
+            ),
+            egui::Align2::LEFT_BOTTOM,
+            match item.kind {
+                crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
+                crate::overlay::BoxKind::Text => "Type here\u{2026}",
+            },
+            font.clone(),
+            egui::Color32::GRAY,
+        );
+    }
+}
+
+/// On-page box width in points: widest line as actually rendered by
+/// egui (real font metrics, not a per-character guess), plus padding.
+fn measured_width_pt(
+    ui: &egui::Ui,
+    lines: &[String],
+    font: &egui::FontId,
+    zoom: f32,
+    kind: crate::overlay::BoxKind,
+) -> f32 {
+    let min_pt = match kind {
+        crate::overlay::BoxKind::Signature => 96.0,
+        crate::overlay::BoxKind::Text => 48.0,
+    };
+    let widest_px = lines
+        .iter()
+        .map(|line| {
+            ui.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap(line.clone(), font.clone(), egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+        })
+        .fold(0.0_f32, f32::max);
+    (widest_px / zoom + 8.0).max(min_pt)
 }
 
 /// Preview font for a box: Momo Signature for signatures, proportional else.

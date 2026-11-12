@@ -30,6 +30,9 @@ pub struct OverlayText {
     pub text: String,
     pub size_pt: f32,
     pub color: [u8; 3],
+    /// Manual box width in PDF points, set by dragging the resize
+    /// handle. `None` = auto-fit to the measured rendered text.
+    pub width_pt: Option<f32>,
 }
 
 impl OverlayText {
@@ -47,6 +50,7 @@ impl OverlayText {
             text: String::new(),
             size_pt,
             color,
+            width_pt: None,
         }
     }
 

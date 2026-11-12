@@ -87,6 +87,43 @@ fn mode_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
 }
 
 /// Muted rounded hint card with a title and one-line explanation.
+/// "Box width" row: fixed-width drag value with Auto reset, or the
+/// auto-fit state with a hint about the on-page resize handle.
+/// Returns whether the width changed.
+fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::OverlayText) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Box width").size(13.5));
+        let mut reset_width = false;
+        match &mut item.width_pt {
+            Some(width_pt) => {
+                let width_resp = ui.add(
+                    egui::DragValue::new(width_pt)
+                        .speed(1.0)
+                        .range(24.0..=1200.0)
+                        .suffix(" pt"),
+                );
+                changed |= width_resp.changed();
+                if ui.small_button("Auto").clicked() {
+                    reset_width = true;
+                }
+            }
+            None => {
+                ui.label(egui::RichText::new("Auto (fits text)").size(13.5).weak())
+                    .on_hover_text(
+                        "Drag the blue handle at the box's bottom-right \
+                         corner on the page to set a fixed width",
+                    );
+            }
+        }
+        if reset_width {
+            item.width_pt = None;
+            changed = true;
+        }
+    });
+    changed
+}
+
 fn hint_card(ui: &mut egui::Ui, title: &str, body: &str) {
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
@@ -462,6 +499,8 @@ impl TypewriterApp {
                         .text("Size"),
                 );
                 changed |= size_resp.changed();
+                ui.add_space(6.0);
+                changed |= box_width_control(ui, item);
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Color").size(13.5));
