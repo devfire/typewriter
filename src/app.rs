@@ -346,8 +346,18 @@ impl TypewriterApp {
             let auto_width_pt = measured_width_pt(ui, &display_lines, &font, zoom, item.kind);
             let width_pt = item.width_pt.map_or(auto_width_pt, |w| w.max(24.0));
             let height_pt = line_count * overlay::LEADING * item.size_pt;
-            let rect =
-                egui::Rect::from_min_size(top_left, egui::vec2(width_pt * zoom, height_pt * zoom));
+            // The script font's glyphs rise ~1.35 em above and swash
+            // ~0.9 em below the baseline, far outside the em box
+            // (0.8/0.4 em). Pad the visual box so they are not clipped;
+            // the baseline (and thus the baked PDF) is unaffected.
+            let (pad_top_pt, pad_bottom_pt) = box_vertical_pad_pt(item);
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(top_left.x, top_left.y - pad_top_pt * zoom),
+                egui::pos2(
+                    top_left.x + width_pt * zoom,
+                    top_left.y + (height_pt + pad_bottom_pt) * zoom,
+                ),
+            );
             box_rects.push(rect);
             let selected = self.overlays.selected == Some(*idx);
             let handle_rect =
@@ -372,7 +382,7 @@ impl TypewriterApp {
                 }
                 self.overlays.dirty = true;
             }
-            let painter = ui.painter_at(rect.expand(2.0));
+            let painter = ui.painter_at(rect.expand(4.0));
             if selected {
                 painter.rect_filled(rect, 2.0, egui::Color32::from_white_alpha(170));
                 painter.rect_stroke(
@@ -392,6 +402,7 @@ impl TypewriterApp {
                 rect,
                 zoom,
                 selected,
+                pad_top_pt,
             );
             if selected {
                 painter.rect_filled(handle_rect, 3.0, ACCENT);
@@ -475,11 +486,12 @@ fn paint_box_text(
     rect: egui::Rect,
     zoom: f32,
     selected: bool,
+    pad_top_pt: f32,
 ) {
     for (line_idx, line) in display_lines.iter().enumerate() {
         let y = rect.min.y
-            + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom
-            + overlay::ASCENT * item.size_pt * zoom;
+            + (pad_top_pt + overlay::ASCENT * item.size_pt) * zoom
+            + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom;
         painter.text(
             egui::pos2(rect.min.x, y),
             egui::Align2::LEFT_BOTTOM,
@@ -492,7 +504,7 @@ fn paint_box_text(
         painter.text(
             egui::pos2(
                 rect.min.x,
-                rect.min.y + overlay::ASCENT * item.size_pt * zoom,
+                rect.min.y + (pad_top_pt + overlay::ASCENT * item.size_pt) * zoom,
             ),
             egui::Align2::LEFT_BOTTOM,
             match item.kind {
@@ -530,6 +542,16 @@ fn measured_width_pt(
         })
         .fold(0.0_f32, f32::max);
     (widest_px / zoom + 8.0).max(min_pt)
+}
+
+/// Extra visual box height (above, below) in points, beyond the em
+/// box. Signatures need it for the script font's tall ascenders and
+/// swash descenders; ordinary text fits inside its em box.
+fn box_vertical_pad_pt(item: &crate::overlay::OverlayText) -> (f32, f32) {
+    match item.kind {
+        crate::overlay::BoxKind::Signature => (0.70 * item.size_pt, 0.50 * item.size_pt),
+        crate::overlay::BoxKind::Text => (0.0, 0.0),
+    }
 }
 
 /// Preview font for a box: Momo Signature for signatures, proportional else.
