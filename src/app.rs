@@ -7,6 +7,7 @@ use eframe::egui;
 use std::path::PathBuf;
 mod panels;
 mod theme;
+mod typewriter_icon;
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x2F, 0x6F, 0xED);
 /// Destructive-action fill (Delete box).
@@ -215,8 +216,8 @@ impl TypewriterApp {
     fn empty_state(&mut self, ui: &mut egui::Ui) {
         ui.vertical_centered(|ui| {
             ui.add_space((ui.available_height() * 0.22).max(24.0));
-            ui.label(egui::RichText::new("✎").size(56.0).color(ACCENT));
-            ui.add_space(6.0);
+            typewriter_icon::typewriter_icon(ui);
+            ui.add_space(10.0);
             ui.label(egui::RichText::new("Typewriter PDF").size(30.0).strong());
             ui.add_space(6.0);
             ui.label(
