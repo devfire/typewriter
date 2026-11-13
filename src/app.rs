@@ -4,9 +4,11 @@ use crate::overlay::{self, OverlayState};
 use crate::pdf::PdfDoc;
 use crate::render::PageRenderer;
 use eframe::egui;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 mod close_prompt;
 mod panels;
+#[cfg(test)]
+mod tests;
 mod theme;
 mod typewriter_icon;
 
@@ -74,23 +76,27 @@ impl TypewriterApp {
         self.pdf_doc.as_ref().map_or(0, PdfDoc::page_count)
     }
 
-    fn load(&mut self, path: PathBuf) {
+    /// Load `path`, replacing the current document on success.
+    /// Returns `false` (leaving the current document, page, and zoom
+    /// untouched, with the reason in `status`) when the file cannot
+    /// be opened or rendered.
+    fn load(&mut self, path: PathBuf) -> bool {
         let doc = match PdfDoc::open(&path) {
             Ok(doc) => doc,
             Err(err) => {
                 self.status = format!("Could not open {}: {err:#}", path.display());
-                return;
+                return false;
             }
         };
         let hayro_pdf = match hayro::hayro_syntax::Pdf::new(doc.bytes.clone()) {
             Ok(pdf) => pdf,
             Err(hayro::hayro_syntax::LoadPdfError::Decryption(_)) => {
                 self.status = "Encrypted/password-protected PDFs are not supported.".to_string();
-                return;
+                return false;
             }
             Err(hayro::hayro_syntax::LoadPdfError::Invalid) => {
                 self.status = "Corrupt or unsupported PDF.".to_string();
-                return;
+                return false;
             }
         };
         self.overlays.items.clear();
@@ -103,6 +109,27 @@ impl TypewriterApp {
         self.hayro_pdf = Some(hayro_pdf);
         self.status = format!("Opened {}", path.display());
         self.pdf_path = Some(path);
+        true
+    }
+
+    /// Reload the just-saved `target`, restoring the page/zoom the
+    /// user was viewing. A failed reload keeps `load`'s error in the
+    /// status bar (prefixed with the successful save) instead of
+    /// claiming a clean `Saved`.
+    fn reload_after_save(&mut self, target: &Path) {
+        let page = self.page;
+        let zoom = self.zoom;
+        if self.load(target.to_path_buf()) {
+            self.page = page.min(self.page_count().saturating_sub(1));
+            self.zoom = zoom;
+            self.status = format!("Saved {}", target.display());
+        } else {
+            let reload_error = std::mem::take(&mut self.status);
+            self.status = format!(
+                "Saved {} but reload failed: {reload_error}",
+                target.display()
+            );
+        }
     }
 
     fn open_dialog(&mut self) {
@@ -161,9 +188,7 @@ impl TypewriterApp {
         };
         match result {
             Ok(()) => {
-                let message = format!("Saved {}", target.display());
-                self.load(target);
-                self.status = message;
+                self.reload_after_save(&target);
                 true
             }
             Err(err) => {
