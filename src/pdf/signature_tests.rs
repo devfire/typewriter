@@ -3,6 +3,7 @@
 use super::tests::fixture_pdf;
 use super::{PdfDoc, signature_font};
 use crate::overlay::{BoxKind, OverlayState};
+use crate::test_util::TempFile;
 use lopdf::{Document, Object, ObjectId, dictionary};
 use std::sync::Arc;
 
@@ -11,10 +12,10 @@ fn signature_bake_embeds_momo_and_is_extractable() {
     let (mut pdf, out) = fixture_pdf();
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
-    overlays.items[idx].text = "Jane Doe".to_string();
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(idx).unwrap().text = "Jane Doe".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert!(overlays.items.is_empty());
-    let bytes = std::fs::read(&out).unwrap();
+    let bytes = std::fs::read(out.path()).unwrap();
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("MomoSignature"), "Type0 font not embedded");
     assert!(text.contains("Identity-H"));
@@ -25,7 +26,6 @@ fn signature_bake_embeds_momo_and_is_extractable() {
         extracted.contains("Jane Doe"),
         "signature not extractable: {extracted:?}"
     );
-    let _ = std::fs::remove_file(&out);
 }
 
 #[test]
@@ -61,14 +61,7 @@ fn multi_page_signature_bake_embeds_font_program_once() {
         "Pages" => Object::Reference(page_tree_id),
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
-    let out = std::env::temp_dir().join(format!(
-        "pdf-editor-test-{}-multipage-sig-{}.pdf",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let out = TempFile::new("multipage-sig");
     let mut pdf = PdfDoc {
         bytes: Arc::new(Vec::new()),
         doc,
@@ -81,10 +74,10 @@ fn multi_page_signature_bake_embeds_font_program_once() {
     // Distinct glyphs per page: the shared font's widths/`ToUnicode`
     // must cover the union, or the second page loses extraction.
     let first = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
-    overlays.items[first].text = "Jane Doe".to_string();
+    overlays.item_mut(first).unwrap().text = "Jane Doe".to_string();
     let second = overlays.add(1, 72.0, 700.0, BoxKind::Signature);
-    overlays.items[second].text = "Zed Quinn".to_string();
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(second).unwrap().text = "Zed Quinn".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     let font_programs = pdf
         .doc
         .objects
@@ -112,7 +105,6 @@ fn multi_page_signature_bake_embeds_font_program_once() {
     let extracted = pdf.doc.extract_text(&[1, 2]).unwrap();
     assert!(extracted.contains("Jane Doe"), "page 1: {extracted:?}");
     assert!(extracted.contains("Zed Quinn"), "page 2: {extracted:?}");
-    let _ = std::fs::remove_file(&out);
 }
 
 #[test]
@@ -121,17 +113,17 @@ fn reloaded_signature_bake_extends_embedded_font_with_new_glyphs() {
     let (mut pdf, out) = fixture_pdf();
     let mut overlays = OverlayState::default();
     let first = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
-    overlays.items[first].text = "Jane Doe".to_string();
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(first).unwrap().text = "Jane Doe".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     drop(pdf);
     // Second session: reload from disk and sign with characters the
     // first signature never used (`Z`, `Q`, `u`, `i`). The reused
     // embedded font must gain widths and ToUnicode entries for them.
-    let mut pdf = PdfDoc::open(&out).unwrap();
+    let mut pdf = PdfDoc::open(out.path()).unwrap();
     let mut overlays = OverlayState::default();
     let second = overlays.add(0, 72.0, 600.0, BoxKind::Signature);
-    overlays.items[second].text = "Zed Quinn".to_string();
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(second).unwrap().text = "Zed Quinn".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     let extracted = pdf.doc.extract_text(&[1]).unwrap();
     assert!(extracted.contains("Jane Doe"), "first: {extracted:?}");
     assert!(extracted.contains("Zed Quinn"), "second: {extracted:?}");
@@ -172,7 +164,6 @@ fn reloaded_signature_bake_extends_embedded_font_with_new_glyphs() {
         .filter(|obj| matches!(obj, Object::Stream(stream) if stream.dict.has(b"Length1")))
         .count();
     assert_eq!(font_programs, 1, "font program re-embedded on reload");
-    let _ = std::fs::remove_file(&out);
 }
 
 #[test]

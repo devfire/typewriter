@@ -101,7 +101,8 @@ fn to_unicode_cmap(used: &BTreeMap<u16, String>) -> Vec<u8> {
 fn numeric(obj: &Object) -> Option<i64> {
     match obj {
         Object::Integer(value) => Some(*value),
-        Object::Real(value) => {
+        Object::Real(value) =>
+        {
             #[allow(clippy::cast_possible_truncation)]
             Some(*value as i64)
         }
@@ -198,8 +199,8 @@ fn parse_to_unicode(content: &[u8]) -> Result<BTreeMap<u16, String>> {
             bail!("invalid ToUnicode bfchar entry count");
         }
         for pair in tokens.chunks_exact(2) {
-            let gid = u16::from_str_radix(pair[0].trim(), 16)
-                .context("invalid ToUnicode glyph id")?;
+            let gid =
+                u16::from_str_radix(pair[0].trim(), 16).context("invalid ToUnicode glyph id")?;
             map.insert(gid, decode_utf16_hex(pair[1])?);
         }
         rest = &after[end + "endbfchar".len()..];
@@ -283,12 +284,7 @@ pub(super) fn extend_signature_font(
     }
     let widths_array: Vec<Object> = widths
         .iter()
-        .flat_map(|(gid, width)| {
-            [
-                i64::from(*gid).into(),
-                Object::Array(vec![(*width).into()]),
-            ]
-        })
+        .flat_map(|(gid, width)| [i64::from(*gid).into(), Object::Array(vec![(*width).into()])])
         .collect();
     doc.get_dictionary_mut(cid_id)
         .context("existing signature CIDFont is not a dictionary")?
@@ -419,7 +415,12 @@ pub(super) fn create_signature_font(
     });
     let to_unicode_id = doc.add_object(Object::Stream(Stream::new(
         Dictionary::new(),
-        to_unicode_cmap(&used.iter().map(|(gid, (c, _))| (*gid, c.to_string())).collect()),
+        to_unicode_cmap(
+            &used
+                .iter()
+                .map(|(gid, (c, _))| (*gid, c.to_string()))
+                .collect(),
+        ),
     )));
     doc.add_object(dictionary! {
         "Type" => "Font",

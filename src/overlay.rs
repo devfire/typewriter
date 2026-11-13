@@ -19,10 +19,18 @@ pub enum BoxKind {
     Signature,
 }
 
+/// Stable identity of an overlay box, assigned once by
+/// [`OverlayState::add`] and never reused. Selection/resize state
+/// holds a `BoxId`, not a positional index, so removing an earlier
+/// box cannot silently retarget it at a different box.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BoxId(u64);
+
 /// One typewriter text box. `x_pt`/`y_top_pt` are PDF points, with
 /// `y_top_pt` measured from the TOP of the page to the top of the em box.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayText {
+    pub id: BoxId,
     pub kind: BoxKind,
     pub page: usize,
     pub x_pt: f32,
@@ -39,13 +47,14 @@ pub struct OverlayText {
 }
 
 impl OverlayText {
-    pub fn new(page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> Self {
+    pub fn new(id: BoxId, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> Self {
         let (size_pt, color) = match kind {
             BoxKind::Text => (12.0, [0, 0, 0]),
             // Larger by default, in dark-blue pen ink.
             BoxKind::Signature => (32.0, [0x20, 0x2F, 0x6B]),
         };
         Self {
+            id,
             kind,
             page,
             x_pt,
@@ -73,7 +82,8 @@ impl OverlayText {
 #[derive(Debug, Default)]
 pub struct OverlayState {
     pub items: Vec<OverlayText>,
-    pub selected: Option<usize>,
+    pub selected: Option<BoxId>,
+    next_id: u64,
     pub dirty: bool,
     /// Bumped whenever the underlying document bytes change (open,
     /// post-save reload) so the texture cache can invalidate.
@@ -81,35 +91,45 @@ pub struct OverlayState {
 }
 
 impl OverlayState {
-    /// Insert a new empty box and select it. Returns its index.
-    pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> usize {
+    /// Insert a new empty box and select it. Returns its stable id.
+    pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> BoxId {
+        let id = BoxId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
         self.items
-            .push(OverlayText::new(page, x_pt, y_top_pt, kind));
-        let idx = self.items.len() - 1;
-        self.selected = Some(idx);
+            .push(OverlayText::new(id, page, x_pt, y_top_pt, kind));
+        self.selected = Some(id);
         self.dirty = true;
-        idx
+        id
     }
 
-    pub fn remove(&mut self, idx: usize) {
-        if idx >= self.items.len() {
+    /// Box with stable identity `id`, wherever it currently sits.
+    #[must_use]
+    pub fn item(&self, id: BoxId) -> Option<&OverlayText> {
+        self.items.iter().find(|item| item.id == id)
+    }
+
+    /// Mutable box with stable identity `id`.
+    pub fn item_mut(&mut self, id: BoxId) -> Option<&mut OverlayText> {
+        self.items.iter_mut().find(|item| item.id == id)
+    }
+
+    pub fn remove(&mut self, id: BoxId) {
+        let Some(pos) = self.items.iter().position(|item| item.id == id) else {
             return;
-        }
-        self.items.remove(idx);
-        self.selected = match self.selected {
-            Some(sel) if sel == idx => None,
-            Some(sel) if sel > idx => Some(sel - 1),
-            other => other,
         };
+        self.items.remove(pos);
+        if self.selected == Some(id) {
+            self.selected = None;
+        }
         self.dirty = true;
     }
 
-    /// Boxes on `page`, paired with their global indices.
-    pub fn by_page(&self, page: usize) -> Vec<(usize, &OverlayText)> {
+    /// Boxes on `page`, paired with their stable ids.
+    pub fn by_page(&self, page: usize) -> Vec<(BoxId, &OverlayText)> {
         self.items
             .iter()
-            .enumerate()
-            .filter(|(_, item)| item.page == page)
+            .filter(|item| item.page == page)
+            .map(|item| (item.id, item))
             .collect()
     }
 
@@ -117,9 +137,16 @@ impl OverlayState {
     /// user never typed). Called before selection changes / save.
     pub fn drop_empty_selected(&mut self) {
         if let Some(sel) = self.selected
-            && self.items.get(sel).is_some_and(OverlayText::is_empty)
+            && self.item(sel).is_some_and(OverlayText::is_empty)
         {
-            self.items.remove(sel);
+            let pos = self
+                .items
+                .iter()
+                .position(|item| item.id == sel)
+                .unwrap_or(usize::MAX);
+            if pos != usize::MAX {
+                self.items.remove(pos);
+            }
             self.selected = None;
         }
     }
@@ -310,11 +337,26 @@ mod tests {
     #[test]
     fn add_selects_and_remove_clears_selection() {
         let mut state = OverlayState::default();
-        let idx = state.add(0, 10.0, 20.0, BoxKind::Text);
-        assert_eq!(state.selected, Some(idx));
+        let id = state.add(0, 10.0, 20.0, BoxKind::Text);
+        assert_eq!(state.selected, Some(id));
         assert!(state.dirty);
-        state.remove(idx);
+        state.remove(id);
         assert_eq!(state.selected, None);
         assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn removing_earlier_box_keeps_selected_identity() {
+        let mut state = OverlayState::default();
+        let first = state.add(0, 10.0, 20.0, BoxKind::Text);
+        let target = state.add(0, 30.0, 40.0, BoxKind::Text);
+        state.item_mut(target).unwrap().text = "keep me".to_string();
+        assert_eq!(state.selected, Some(target));
+        // Positional selection would now point at a different (or no)
+        // box; the stable id must still resolve to the same box.
+        state.remove(first);
+        assert_eq!(state.selected, Some(target));
+        assert_eq!(state.item(target).unwrap().text, "keep me");
+        assert_eq!(state.items.len(), 1);
     }
 }

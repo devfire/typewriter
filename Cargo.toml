@@ -3,10 +3,18 @@ name = "pdf-editor"
 version = "0.1.0"
 edition = "2024"
 
+# Binary crate: every dependency is pinned exactly, matching
+# Cargo.lock, so a manifest edit can never silently change the
+# resolved version. Bump deliberately and update the lockfile.
 [dependencies]
-anyhow = "1.0.104"
+anyhow = "=1.0.104"
 eframe = "=0.32.1"
-hayro = "0.9"
+hayro = "=0.9.0"
 lopdf = "=0.36.0"
-rfd = "0.18.0"
-ttf-parser = "0.25"
+rfd = "=0.18.0"
+ttf-parser = "=0.25.1"
+
+# The pedantic gate from AGENTS.md, enforced by the table (and by
+# CI with `-D warnings`) instead of by prose alone.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }

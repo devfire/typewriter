@@ -124,11 +124,9 @@ mod tests {
         });
         doc.trailer
             .set("Root", lopdf::Object::Reference(catalog_id));
-        let path =
-            std::env::temp_dir().join(format!("pdf-editor-render-test-{}.pdf", std::process::id()));
-        doc.save(&path).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
+        let file = crate::test_util::TempFile::new("render");
+        doc.save(file.path()).unwrap();
+        let bytes = std::fs::read(file.path()).unwrap();
         Pdf::new(bytes).unwrap()
     }
 

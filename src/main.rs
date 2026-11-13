@@ -5,6 +5,8 @@ mod overlay;
 mod pdf;
 mod render;
 mod signature;
+#[cfg(test)]
+mod test_util;
 
 use eframe::egui;
 

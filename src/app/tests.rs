@@ -1,8 +1,8 @@
 use super::{CloseState, Mode, TypewriterApp};
 use crate::overlay::{BoxKind, OverlayState};
 use crate::render::PageRenderer;
+use crate::test_util::TempFile;
 use lopdf::{Document, Object, dictionary};
-use std::path::PathBuf;
 
 fn test_app() -> TypewriterApp {
     TypewriterApp {
@@ -23,8 +23,8 @@ fn test_app() -> TypewriterApp {
     }
 }
 
-/// Write a minimal `pages`-page PDF and return its path.
-fn write_pdf(pages: usize) -> PathBuf {
+/// Write a minimal `pages`-page PDF to a temp file (deleted on drop).
+fn write_pdf(pages: usize) -> TempFile {
     let mut doc = Document::new();
     let page_tree_id = doc.new_object_id();
     let mut kids = Vec::new();
@@ -49,26 +49,19 @@ fn write_pdf(pages: usize) -> PathBuf {
         "Pages" => Object::Reference(page_tree_id),
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "pdf-editor-app-test-{}-{stamp}.pdf",
-        std::process::id()
-    ));
-    doc.save(&path).unwrap();
-    path
+    let file = TempFile::new("app");
+    doc.save(file.path()).unwrap();
+    file
 }
 
 #[test]
 fn reload_after_save_preserves_page_and_zoom() {
     let path = write_pdf(3);
     let mut app = test_app();
-    assert!(app.load(path.clone()));
+    assert!(app.load(path.path().to_path_buf()));
     app.page = 2;
     app.zoom = 1.7;
-    app.reload_after_save(&path);
+    app.reload_after_save(path.path());
     assert_eq!(app.page, 2);
     assert!((app.zoom - 1.7).abs() < f32::EPSILON);
     assert!(
@@ -76,7 +69,6 @@ fn reload_after_save_preserves_page_and_zoom() {
         "unexpected status: {}",
         app.status
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -84,21 +76,22 @@ fn reload_after_save_clamps_page_to_new_page_count() {
     let path = write_pdf(3);
     let shorter = write_pdf(1);
     let mut app = test_app();
-    assert!(app.load(path));
+    assert!(app.load(path.path().to_path_buf()));
     app.page = 2;
-    app.reload_after_save(&shorter);
+    app.reload_after_save(shorter.path());
     assert_eq!(app.page, 0);
-    let _ = std::fs::remove_file(&shorter);
 }
 
 #[test]
 fn failed_reload_after_save_is_surfaced_not_masked_by_saved() {
     let path = write_pdf(3);
     let mut app = test_app();
-    assert!(app.load(path.clone()));
+    assert!(app.load(path.path().to_path_buf()));
     app.page = 1;
     app.zoom = 1.7;
-    let missing = path.with_file_name("pdf-editor-app-test-no-such-file.pdf");
+    let missing = path
+        .path()
+        .with_file_name("pdf-editor-app-test-no-such-file.pdf");
     app.reload_after_save(&missing);
     assert!(
         app.status.contains("reload failed"),
@@ -109,7 +102,6 @@ fn failed_reload_after_save_is_surfaced_not_masked_by_saved() {
     assert_eq!(app.page, 1);
     assert!((app.zoom - 1.7).abs() < f32::EPSILON);
     assert_eq!(app.page_count(), 3);
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

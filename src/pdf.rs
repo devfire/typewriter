@@ -42,17 +42,13 @@ impl PdfDoc {
         let mut boxes_pt = Vec::with_capacity(page_ids.len());
         let mut sizes_pt = Vec::with_capacity(page_ids.len());
         let mut rotations = Vec::with_capacity(page_ids.len());
-        let mut hayro_sizes: Option<Vec<(f32, f32)>> = None;
         for (idx, page_id) in page_ids.iter().enumerate() {
-            let page_box = page_box(&doc, *page_id).unwrap_or_else(|| {
-                if hayro_sizes.is_none() {
-                    hayro_sizes = Some(hayro_page_sizes(&bytes));
-                }
-                hayro_sizes
-                    .as_ref()
-                    .and_then(|sizes| sizes.get(idx).copied())
-                    .map_or((0.0, 0.0, 612.0, 792.0), |(w, h)| (0.0, 0.0, w, h))
-            });
+            // MediaBox is required (inheritable) per the PDF spec;
+            // silently assuming US Letter would bake/display text at
+            // wrong coordinates, so a page with neither MediaBox nor
+            // CropBox anywhere in its parent chain is an error.
+            let page_box = page_box(&doc, *page_id)
+                .ok_or_else(|| anyhow::anyhow!("page {} has no MediaBox or CropBox", idx + 1))?;
             boxes_pt.push(page_box);
             let (w, h) = (page_box.2 - page_box.0, page_box.3 - page_box.1);
             let rotate = inherited_int(&doc, *page_id, b"Rotate").unwrap_or(0);
@@ -86,9 +82,17 @@ impl PdfDoc {
     pub fn bake_and_save(&mut self, overlays: &mut OverlayState, out: &Path) -> Result<()> {
         let mut by_page: BTreeMap<usize, Vec<&OverlayText>> = BTreeMap::new();
         for item in overlays.items.iter().filter(|item| !item.is_empty()) {
-            if item.page < self.page_ids.len() {
-                by_page.entry(item.page).or_default().push(item);
+            // An out-of-range page is a caller bug, not a box to
+            // silently drop: bail before staging anything, leaving
+            // `overlays` intact so nothing is lost on `clear_baked`.
+            if item.page >= self.page_ids.len() {
+                bail!(
+                    "overlay box is on page {} but the document has {} page(s)",
+                    item.page + 1,
+                    self.page_ids.len()
+                );
             }
+            by_page.entry(item.page).or_default().push(item);
         }
         let sig_face = if overlays
             .items
@@ -307,6 +311,7 @@ fn box_operations(
     ops
 }
 
+#[cfg(test)]
 fn hayro_page_sizes(bytes: &Arc<Vec<u8>>) -> Vec<(f32, f32)> {
     let Ok(pdf) = hayro::hayro_syntax::Pdf::new(Arc::clone(bytes)) else {
         return Vec::new();

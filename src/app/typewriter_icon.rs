@@ -41,7 +41,10 @@ pub(super) fn typewriter_icon(ui: &mut egui::Ui) {
     }
 
     // Carriage return lever and roller knobs.
-    painter.line_segment([at(28.0, 52.0), at(16.0, 42.0)], Stroke::new(3.0_f32, METAL));
+    painter.line_segment(
+        [at(28.0, 52.0), at(16.0, 42.0)],
+        Stroke::new(3.0_f32, METAL),
+    );
     painter.circle_filled(at(14.0, 40.0), 4.0, ACCENT);
     painter.rect_filled(box_at(30.0, 50.0, 88.0, 11.0), 5.0, METAL);
     painter.rect_stroke(
@@ -66,7 +69,12 @@ pub(super) fn typewriter_icon(ui: &mut egui::Ui) {
 
     // Body: trapezoid shell wider at the base.
     painter.add(Shape::convex_polygon(
-        vec![at(36.0, 64.0), at(112.0, 64.0), at(124.0, 106.0), at(24.0, 106.0)],
+        vec![
+            at(36.0, 64.0),
+            at(112.0, 64.0),
+            at(124.0, 106.0),
+            at(24.0, 106.0),
+        ],
         BODY,
         Stroke::new(1.2_f32, BODY_EDGE),
     ));

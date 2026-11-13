@@ -6,12 +6,20 @@
 //! file was actually written, so cancelling the overwrite dialog or a
 //! failed write keeps the app (and the prompt) open.
 
-use super::{ACCENT, BTN_H, CloseState, DANGER, RADIUS, TypewriterApp};
+use super::{ACCENT, BTN_H, CloseState, DANGER, RADIUS, SaveMode, TypewriterApp};
 use eframe::egui;
 
-fn prompt_button(label: &str, filled: bool) -> egui::Button<'_> {
+/// Visual style of a prompt button: filled (Save/Discard, caller
+/// supplies the fill color) vs. plain (Cancel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ButtonStyle {
+    Filled,
+    Plain,
+}
+
+fn prompt_button(label: &str, style: ButtonStyle) -> egui::Button<'_> {
     let text = egui::RichText::new(label).size(15.0);
-    let text = if filled {
+    let text = if style == ButtonStyle::Filled {
         text.strong().color(egui::Color32::WHITE)
     } else {
         text
@@ -63,7 +71,7 @@ impl TypewriterApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .add(
-                        prompt_button("Save", true)
+                        prompt_button("Save", ButtonStyle::Filled)
                             .fill(ACCENT)
                             .stroke(egui::Stroke::NONE),
                     )
@@ -73,7 +81,7 @@ impl TypewriterApp {
                 }
                 if ui
                     .add(
-                        prompt_button("Discard", true)
+                        prompt_button("Discard", ButtonStyle::Filled)
                             .fill(DANGER)
                             .stroke(egui::Stroke::NONE),
                     )
@@ -81,7 +89,10 @@ impl TypewriterApp {
                 {
                     discard = true;
                 }
-                if ui.add(prompt_button("Cancel", false)).clicked() {
+                if ui
+                    .add(prompt_button("Cancel", ButtonStyle::Plain))
+                    .clicked()
+                {
                     cancel = true;
                 }
             });
@@ -89,7 +100,7 @@ impl TypewriterApp {
         if save {
             // A cancelled overwrite dialog or failed write leaves
             // `dirty` set; keep the prompt open instead of closing.
-            if self.save(false) {
+            if self.save(SaveMode::InPlace) {
                 self.close_state = CloseState::Allowed;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

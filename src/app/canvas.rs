@@ -1,7 +1,7 @@
 //! Page canvas: rendered page, overlay boxes, and box layout cache.
 
 use super::{ACCENT, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, TypewriterApp, typewriter_icon};
-use crate::overlay;
+use crate::overlay::{self, BoxId};
 use crate::render::PageRenderer;
 use eframe::egui;
 use std::hash::{Hash, Hasher};
@@ -165,8 +165,8 @@ impl TypewriterApp {
     /// zoom are unchanged, so the steady-state frame path performs
     /// no glyph layout and no `String`/`Vec<String>` cloning. The
     /// expensive layout runs only on a cache miss.
-    fn box_layout(&mut self, ui: &egui::Ui, idx: usize, zoom: f32) -> Option<(Arc<[String]>, f32)> {
-        let item = self.overlays.items.get(idx)?;
+    fn box_layout(&mut self, ui: &egui::Ui, idx: BoxId, zoom: f32) -> Option<(Arc<[String]>, f32)> {
+        let item = self.overlays.item(idx)?;
         let key = box_layout_key(item, zoom);
         if let Some(cached) = self.box_layouts.get(&idx)
             && cached.key == key
@@ -198,24 +198,23 @@ impl TypewriterApp {
         page_resp: &egui::Response,
     ) {
         self.box_layouts
-            .retain(|idx, _| *idx < self.overlays.items.len());
-        // Indices only: boxes are never cloned. Each box's scalar
+            .retain(|id, _| self.overlays.item(*id).is_some());
+        // Stable ids only: boxes are never cloned. Each box's scalar
         // fields are copied out below before any `&mut self` call,
         // and its lines/width come from the layout cache.
-        let box_indices: Vec<usize> = self
+        let box_indices: Vec<BoxId> = self
             .overlays
             .items
             .iter()
-            .enumerate()
-            .filter(|(_, item)| item.page == page)
-            .map(|(idx, _)| idx)
+            .filter(|item| item.page == page)
+            .map(|item| item.id)
             .collect();
         let mut box_rects: Vec<egui::Rect> = Vec::with_capacity(box_indices.len());
         for idx in box_indices {
             let Some((display_lines, auto_width_pt)) = self.box_layout(ui, idx, zoom) else {
                 continue;
             };
-            let Some(item) = self.overlays.items.get(idx) else {
+            let Some(item) = self.overlays.item(idx) else {
                 continue;
             };
             let font = box_font(item, zoom);
@@ -257,7 +256,7 @@ impl TypewriterApp {
             if resp.dragged() && self.resize_box != Some(idx) {
                 self.overlays.selected = Some(idx);
                 let delta = resp.drag_delta();
-                if let Some(current) = self.overlays.items.get_mut(idx) {
+                if let Some(current) = self.overlays.item_mut(idx) {
                     current.x_pt = (current.x_pt + delta.x / zoom).max(0.0);
                     current.y_top_pt = (current.y_top_pt + delta.y / zoom).max(0.0);
                 }
@@ -273,10 +272,10 @@ impl TypewriterApp {
                     egui::StrokeKind::Outside,
                 );
             }
-            paint_box_text(
-                &painter,
-                &display_lines,
-                &font,
+            paint_box_text(&PaintBoxText {
+                painter: &painter,
+                display_lines: &display_lines,
+                font: &font,
                 color,
                 rect,
                 zoom,
@@ -285,7 +284,7 @@ impl TypewriterApp {
                 size_pt,
                 kind,
                 text_is_empty,
-            );
+            });
             if selected {
                 painter.rect_filled(handle_rect, 3.0, ACCENT);
                 painter.rect_stroke(
@@ -329,7 +328,7 @@ impl TypewriterApp {
     fn resize_handle(
         &mut self,
         ui: &mut egui::Ui,
-        idx: usize,
+        idx: BoxId,
         handle_rect: egui::Rect,
         width_pt: f32,
         zoom: f32,
@@ -342,7 +341,7 @@ impl TypewriterApp {
             )
             .on_hover_text("Drag to widen/narrow the box \u{00b7} double-click for auto-fit");
         if resize_resp.double_clicked() {
-            if let Some(current) = self.overlays.items.get_mut(idx) {
+            if let Some(current) = self.overlays.item_mut(idx) {
                 current.width_pt = None;
             }
             self.overlays.dirty = true;
@@ -355,7 +354,7 @@ impl TypewriterApp {
         }
         if self.resize_box == Some(idx) && resize_resp.dragged() {
             let delta_pt = resize_resp.drag_delta().x / zoom;
-            if let Some(current) = self.overlays.items.get_mut(idx) {
+            if let Some(current) = self.overlays.item_mut(idx) {
                 let base = current.width_pt.unwrap_or(width_pt);
                 current.width_pt = Some((base + delta_pt).max(24.0));
             }
@@ -367,13 +366,12 @@ impl TypewriterApp {
     }
 }
 
-/// Draw a box's lines (plus the empty-box placeholder when selected)
-/// inside `rect`.
-#[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
-fn paint_box_text(
-    painter: &egui::Painter,
-    display_lines: &[String],
-    font: &egui::FontId,
+/// Inputs for [`paint_box_text`], grouped so the call site names
+/// every argument (and no `too_many_arguments` allow is needed).
+struct PaintBoxText<'a> {
+    painter: &'a egui::Painter,
+    display_lines: &'a [String],
+    font: &'a egui::FontId,
     color: egui::Color32,
     rect: egui::Rect,
     zoom: f32,
@@ -382,8 +380,26 @@ fn paint_box_text(
     size_pt: f32,
     kind: crate::overlay::BoxKind,
     text_is_empty: bool,
-) {
+}
+
+/// Draw a box's lines (plus the empty-box placeholder when selected)
+/// inside `rect`.
+fn paint_box_text(args: &PaintBoxText<'_>) {
+    let PaintBoxText {
+        painter,
+        display_lines,
+        font,
+        color,
+        rect,
+        zoom,
+        selected,
+        pad_top_pt,
+        size_pt,
+        kind,
+        text_is_empty,
+    } = *args;
     for (line_idx, line) in display_lines.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
         let y = rect.min.y
             + (pad_top_pt + overlay::ASCENT * size_pt) * zoom
             + (line_idx as f32) * overlay::LEADING * size_pt * zoom;

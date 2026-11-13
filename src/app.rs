@@ -1,6 +1,6 @@
 //! egui application shell: toolbar, sidebar inspector, page canvas.
 
-use crate::overlay::OverlayState;
+use crate::overlay::{BoxId, OverlayState};
 use crate::pdf::PdfDoc;
 use crate::render::PageRenderer;
 use eframe::egui;
@@ -35,6 +35,14 @@ pub(super) enum CloseState {
     Allowed,
 }
 
+/// Where a save writes: overwrite the open file, or prompt for a
+/// new path. An enum, not a `bool`, so call sites read by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SaveMode {
+    InPlace,
+    SaveAs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Navigate,
@@ -55,12 +63,11 @@ pub struct TypewriterApp {
     focus_editor: bool,
     fit_pending: bool,
     /// Box currently being width-resized via its corner handle, if any.
-    resize_box: Option<usize>,
+    resize_box: Option<BoxId>,
     close_state: CloseState,
-    /// Per-box display layout cache, keyed by global box index and
-    /// validated by `BoxLayoutKey`, so stale entries left behind by
-    /// index shifts (removal) are recomputed rather than trusted.
-    box_layouts: HashMap<usize, canvas::CachedBoxLayout>,
+    /// Per-box display layout cache, keyed by stable `BoxId` and
+    /// validated by `BoxLayoutKey`.
+    box_layouts: HashMap<BoxId, canvas::CachedBoxLayout>,
 }
 
 impl TypewriterApp {
@@ -158,12 +165,12 @@ impl TypewriterApp {
     /// was actually written (dialog not cancelled, overwrite confirmed,
     /// write succeeded) — the close prompt relies on this to decide
     /// whether closing may proceed.
-    fn save(&mut self, save_as: bool) -> bool {
+    fn save(&mut self, mode: SaveMode) -> bool {
         if self.pdf_doc.is_none() {
             return false;
         }
         self.overlays.drop_empty_selected();
-        let target = if save_as {
+        let target = if mode == SaveMode::SaveAs {
             let mut dialog = rfd::FileDialog::new().add_filter("PDF", &["pdf"]);
             if let Some(name) = self
                 .pdf_path
@@ -232,7 +239,7 @@ impl TypewriterApp {
             self.open_dialog();
         }
         if save && self.overlays.dirty {
-            self.save(false);
+            self.save(SaveMode::InPlace);
         }
         if zoom_in {
             self.zoom = (self.zoom * 1.25).clamp(MIN_ZOOM, MAX_ZOOM);

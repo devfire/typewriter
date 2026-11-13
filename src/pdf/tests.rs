@@ -1,5 +1,6 @@
 use super::*;
 use crate::overlay::baseline_y;
+use crate::test_util::TempFile;
 
 #[test]
 fn winansi_encodes_e_acute_as_single_byte() {
@@ -24,6 +25,7 @@ fn baseline_uses_ascent_not_full_size() {
 #[test]
 fn two_lines_produce_two_tj_and_one_td() {
     let item = OverlayText {
+        id: crate::overlay::BoxId::default(),
         kind: BoxKind::Text,
         page: 0,
         x_pt: 10.0,
@@ -54,6 +56,7 @@ fn tj_strings(ops: &[Operation]) -> Vec<Vec<u8>> {
 
 fn fixed_width_item(text: &str, width_pt: f32) -> OverlayText {
     OverlayText {
+        id: crate::overlay::BoxId::default(),
         kind: BoxKind::Text,
         page: 0,
         x_pt: 10.0,
@@ -104,16 +107,15 @@ fn fixed_width_bake_wraps_text_in_saved_content() {
     let page_id = pdf.page_ids[0];
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
-    overlays.items[idx].text = "aaaa bbbb cccc".to_string();
-    overlays.items[idx].width_pt = Some(30.0);
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(idx).unwrap().text = "aaaa bbbb cccc".to_string();
+    overlays.item_mut(idx).unwrap().width_pt = Some(30.0);
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     let content = pdf.doc.get_page_content(page_id).unwrap();
     let text = String::from_utf8(content).unwrap();
     assert_eq!(text.split_whitespace().filter(|t| *t == "Tj").count(), 3);
     for word in ["aaaa", "bbbb", "cccc"] {
         assert!(text.contains(word), "wrapped word {word} missing: {text}");
     }
-    let _ = std::fs::remove_file(&out);
 }
 
 /// Operands of the first `Tm` operator in a decoded content stream.
@@ -137,19 +139,16 @@ fn rotated_pages_bake_text_at_previewed_position() {
         (270, (792.0, 612.0), [0.0, -1.0, 1.0, 0.0, 530.4, 720.0]),
     ] {
         let (mut fixture, out) = fixture_pdf_rotated(rotate);
-        let input = std::env::temp_dir().join(format!(
-            "pdf-editor-test-{}-rotated-{rotate}.pdf",
-            std::process::id()
-        ));
-        fixture.doc.save(&input).unwrap();
+        let input = TempFile::new(&format!("rotated-{rotate}"));
+        fixture.doc.save(input.path()).unwrap();
         // Go through `open` so the `/Rotate` inheritance is exercised.
-        let mut pdf = PdfDoc::open(&input).unwrap();
+        let mut pdf = PdfDoc::open(input.path()).unwrap();
         assert_eq!(pdf.sizes_pt, vec![size], "rotate {rotate}");
         let page_id = pdf.page_ids[0];
         let mut overlays = OverlayState::default();
         let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
-        overlays.items[idx].text = "Hello".to_string();
-        pdf.bake_and_save(&mut overlays, &out).unwrap();
+        overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+        pdf.bake_and_save(&mut overlays, out.path()).unwrap();
         let content = pdf.doc.get_page_content(page_id).unwrap();
         let tm = tm_operands(&content);
         assert_eq!(tm.len(), expected.len(), "rotate {rotate}");
@@ -157,8 +156,6 @@ fn rotated_pages_bake_text_at_previewed_position() {
             assert!((actual - want).abs() < 0.001, "rotate {rotate}: {tm:?}");
         }
         assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
-        let _ = std::fs::remove_file(&out);
-        let _ = std::fs::remove_file(&input);
     }
 }
 
@@ -188,28 +185,18 @@ fn cropped_pages_bake_text_at_previewed_position() {
         "Pages" => Object::Reference(page_tree_id),
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let input = std::env::temp_dir().join(format!(
-        "pdf-editor-test-{}-cropped-{stamp}.pdf",
-        std::process::id()
-    ));
-    let out = std::env::temp_dir().join(format!(
-        "pdf-editor-test-{}-cropped-out-{stamp}.pdf",
-        std::process::id()
-    ));
-    doc.save(&input).unwrap();
+    let input = TempFile::new("cropped");
+    let out = TempFile::new("cropped-out");
+    doc.save(input.path()).unwrap();
     // Go through `open` so the effective box is derived from the file.
-    let mut pdf = PdfDoc::open(&input).unwrap();
+    let mut pdf = PdfDoc::open(input.path()).unwrap();
     // Status-bar size must agree with the renderer's (hayro) dimensions.
     assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
     assert_eq!(hayro_page_sizes(&pdf.bytes), pdf.sizes_pt);
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
-    overlays.items[idx].text = "Hello".to_string();
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     let content = pdf.doc.get_page_content(page_id).unwrap();
     let tm = tm_operands(&content);
     // Baseline: x = 36 + 72, y = 744 - 72 - 0.8 * 12 = 662.4. The old
@@ -220,17 +207,15 @@ fn cropped_pages_bake_text_at_previewed_position() {
         assert!((actual - want).abs() < 0.001, "cropped Tm: {tm:?}");
     }
     assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
-    let _ = std::fs::remove_file(&out);
-    let _ = std::fs::remove_file(&input);
 }
 
 /// Build a minimal one-page `PdfDoc` in memory.
-pub(super) fn fixture_pdf() -> (PdfDoc, std::path::PathBuf) {
+pub(super) fn fixture_pdf() -> (PdfDoc, TempFile) {
     fixture_pdf_rotated(0)
 }
 
 /// Build a minimal one-page `PdfDoc` whose page has `/Rotate rotate`.
-fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, std::path::PathBuf) {
+fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, TempFile) {
     let mut doc = Document::new();
     let page_tree_id = doc.new_object_id();
     let page_id = doc.add_object(dictionary! {
@@ -252,14 +237,7 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, std::path::PathBuf) {
         "Pages" => Object::Reference(page_tree_id),
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
-    let out = std::env::temp_dir().join(format!(
-        "pdf-editor-test-{}-{}.pdf",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
+    let out = TempFile::new(&format!("fixture-{rotate}"));
     let rotate = rotate.rem_euclid(360);
     let swapped = matches!(rotate, 90 | 270);
     let pdf = PdfDoc {
@@ -283,17 +261,16 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
     let page_id = pdf.page_ids[0];
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
-    overlays.items[idx].text = "Hello".to_string();
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert!(overlays.items.is_empty());
     assert!(!overlays.dirty);
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     // Second save: drained, so zero new content streams.
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     let text = pdf.doc.extract_text(&[1]).unwrap();
     assert!(text.contains("Hello"), "baked text missing: {text:?}");
-    let _ = std::fs::remove_file(&out);
 }
 
 #[test]
@@ -302,26 +279,20 @@ fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
     let page_id = pdf.page_ids[0];
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
-    overlays.items[idx].text = "Hello".to_string();
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
     // Saving into a missing directory fails after the bake has staged
     // its content stream and font objects.
-    let bad_out = std::env::temp_dir()
-        .join(format!(
-            "pdf-editor-missing-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-        .join("out.pdf");
+    // A path under a temp-file path (not a directory): saving
+    // fails after the bake has staged its content stream/fonts.
+    let missing_dir = TempFile::new("missing");
+    let bad_out = missing_dir.path().join("out.pdf");
     assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
     // Neither the document nor the overlays were mutated by the failure.
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 0);
     assert_eq!(overlays.items.len(), 1);
     assert!(overlays.dirty);
     // Retry against a writable path bakes the text exactly once.
-    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert!(overlays.items.is_empty());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     let text = pdf.doc.extract_text(&[1]).unwrap();
@@ -330,7 +301,52 @@ fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
         1,
         "text baked more than once: {text:?}"
     );
-    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn bake_with_out_of_range_page_bails_without_dropping_boxes() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(99, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    let err = pdf.bake_and_save(&mut overlays, out.path()).unwrap_err();
+    assert!(err.to_string().contains("page 100"), "unexpected: {err:#}");
+    // Nothing baked, nothing cleared: the box survives for a retry.
+    assert_eq!(overlays.items.len(), 1);
+    assert!(overlays.dirty);
+    assert_eq!(pdf.doc.get_page_contents(pdf.page_ids[0]).len(), 0);
+}
+
+#[test]
+fn open_without_media_or_crop_box_is_an_error() {
+    let mut doc = Document::new();
+    let page_tree_id = doc.new_object_id();
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(page_tree_id),
+    });
+    doc.set_object(
+        page_tree_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(page_tree_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    let input = TempFile::new("no-mediabox");
+    doc.save(input.path()).unwrap();
+    let Err(err) = PdfDoc::open(input.path()) else {
+        panic!("page without MediaBox/CropBox must not open");
+    };
+    assert!(
+        err.to_string().contains("no MediaBox or CropBox"),
+        "unexpected: {err:#}"
+    );
 }
 
 #[test]

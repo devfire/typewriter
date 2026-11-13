@@ -8,7 +8,7 @@
 use super::widgets::{
     big_button, box_width_control, group, hint_card, icon_button, mode_button, pill, primary_button,
 };
-use super::{ACCENT, BTN_H, DANGER, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, TypewriterApp};
+use super::{ACCENT, BTN_H, DANGER, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, SaveMode, TypewriterApp};
 use crate::overlay::BoxKind;
 use eframe::egui;
 
@@ -60,13 +60,13 @@ impl TypewriterApp {
                     .on_hover_text("Bake text into the PDF  (Ctrl+S)")
                     .clicked()
                 {
-                    self.save(false);
+                    self.save(SaveMode::InPlace);
                 }
                 if ui
                     .add_enabled(self.page_count() > 0, big_button("Save As…"))
                     .clicked()
                 {
-                    self.save(true);
+                    self.save(SaveMode::SaveAs);
                 }
             });
         });
@@ -241,8 +241,8 @@ impl TypewriterApp {
                 "Switch to Type or Sign mode and click anywhere on the page.",
             );
         }
-        let mut select: Option<usize> = None;
-        let mut remove: Option<usize> = None;
+        let mut select: Option<crate::overlay::BoxId> = None;
+        let mut remove: Option<crate::overlay::BoxId> = None;
         for (idx, item) in &page_items {
             let selected = self.overlays.selected == Some(*idx);
             let first_line: String = item
@@ -320,7 +320,7 @@ impl TypewriterApp {
             );
             return;
         };
-        let Some(item) = self.overlays.items.get_mut(sel) else {
+        let Some(item) = self.overlays.item_mut(sel) else {
             self.overlays.selected = None;
             return;
         };
