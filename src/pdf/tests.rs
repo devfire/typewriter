@@ -90,6 +90,68 @@ fn rotated_pages_bake_text_at_previewed_position() {
     }
 }
 
+#[test]
+fn cropped_pages_bake_text_at_previewed_position() {
+    // MediaBox 612x792 at the origin; CropBox inset by (36, 48) with a
+    // non-zero origin, so the visible page is 540x696 starting at
+    // (36, 48). hayro renders the crop box, so the baker must too.
+    let mut doc = Document::new();
+    let page_tree_id = doc.new_object_id();
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(page_tree_id),
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "CropBox" => vec![36.into(), 48.into(), 576.into(), 744.into()],
+    });
+    doc.set_object(
+        page_tree_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(page_tree_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let input = std::env::temp_dir().join(format!(
+        "pdf-editor-test-{}-cropped-{stamp}.pdf",
+        std::process::id()
+    ));
+    let out = std::env::temp_dir().join(format!(
+        "pdf-editor-test-{}-cropped-out-{stamp}.pdf",
+        std::process::id()
+    ));
+    doc.save(&input).unwrap();
+    // Go through `open` so the effective box is derived from the file.
+    let mut pdf = PdfDoc::open(&input).unwrap();
+    // Status-bar size must agree with the renderer's (hayro) dimensions.
+    assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
+    assert_eq!(hayro_page_sizes(&pdf.bytes), pdf.sizes_pt);
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.items[idx].text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    let content = pdf.doc.get_page_content(page_id).unwrap();
+    let tm = tm_operands(&content);
+    // Baseline: x = 36 + 72, y = 744 - 72 - 0.8 * 12 = 662.4. The old
+    // MediaBox-derived box would give (72, 710.4) instead.
+    let expected = [1.0, 0.0, 0.0, 1.0, 108.0, 662.4];
+    assert_eq!(tm.len(), expected.len());
+    for (actual, want) in tm.iter().zip(expected) {
+        assert!((actual - want).abs() < 0.001, "cropped Tm: {tm:?}");
+    }
+    assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&input);
+}
+
 /// Build a minimal one-page `PdfDoc` in memory.
 fn fixture_pdf() -> (PdfDoc, std::path::PathBuf) {
     fixture_pdf_rotated(0)

@@ -19,7 +19,7 @@ pub struct PdfDoc {
     page_ids: Vec<ObjectId>,
     /// Display size per page in points (rotation-aware).
     pub sizes_pt: Vec<(f32, f32)>,
-    /// `(x0, y0, x1, y1)` `MediaBox` (fallback `CropBox`) per page.
+    /// `(x0, y0, x1, y1)` effective visible box (`CropBox` ∩ `MediaBox`) per page.
     boxes_pt: Vec<(f32, f32, f32, f32)>,
     /// Clockwise `/Rotate` per page, normalized to `0..360`.
     rotations: Vec<i64>,
@@ -393,10 +393,22 @@ fn inherited_int(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<i64> {
     None
 }
 
+/// Effective visible page box: the `CropBox` intersected with the
+/// `MediaBox`, matching what hayro renders. `CropBox` defaults to
+/// `MediaBox` when absent (and vice versa). Disjoint boxes clamp to a
+/// zero-area box at the max origin, mirroring hayro's intersection.
 fn page_box(doc: &Document, page_id: ObjectId) -> Option<(f32, f32, f32, f32)> {
-    let [x0, y0, x1, y1] = inherited_array(doc, page_id, b"MediaBox")
-        .or_else(|| inherited_array(doc, page_id, b"CropBox"))?;
-    Some((x0, y0, x1, y1))
+    let media = inherited_array(doc, page_id, b"MediaBox");
+    let crop = inherited_array(doc, page_id, b"CropBox");
+    match (media, crop) {
+        (Some([mx0, my0, mx1, my1]), Some([cx0, cy0, cx1, cy1])) => {
+            let x0 = mx0.max(cx0);
+            let y0 = my0.max(cy0);
+            Some((x0, y0, mx1.min(cx1).max(x0), my1.min(cy1).max(y0)))
+        }
+        (Some([x0, y0, x1, y1]), None) | (None, Some([x0, y0, x1, y1])) => Some((x0, y0, x1, y1)),
+        (None, None) => None,
+    }
 }
 
 #[derive(Clone, Copy)]
