@@ -436,6 +436,9 @@ impl TypewriterApp {
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
+        // One-shot: placement sets this so the new box's editor grabs
+        // keyboard focus on the next frame; never retain it past here.
+        let focus_editor = std::mem::take(&mut self.focus_editor);
         let Some(sel) = self.overlays.selected else {
             hint_card(
                 ui,
@@ -476,6 +479,9 @@ impl TypewriterApp {
                     ),
                     editor,
                 );
+                if focus_editor {
+                    edit.request_focus();
+                }
                 if is_signature {
                     ui.add_space(8.0);
                     let ink = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);

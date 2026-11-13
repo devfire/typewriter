@@ -1,5 +1,5 @@
 use super::{CloseState, Mode, TypewriterApp};
-use crate::overlay::OverlayState;
+use crate::overlay::{BoxKind, OverlayState};
 use crate::render::PageRenderer;
 use lopdf::{Document, Object, dictionary};
 use std::path::PathBuf;
@@ -109,4 +109,34 @@ fn failed_reload_after_save_is_surfaced_not_masked_by_saved() {
     assert!((app.zoom - 1.7).abs() < f32::EPSILON);
     assert_eq!(app.page_count(), 3);
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn placed_box_editor_focuses_so_typing_edits_the_box() {
+    use eframe::egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+
+    let mut app = test_app();
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    // Set by canvas placement (see `focus_editor = true` on page click).
+    app.focus_editor = true;
+
+    let ctx = Context::default();
+    let run = |app: &mut TypewriterApp, events: Vec<Event>| {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+            events,
+            ..RawInput::default()
+        };
+        let _output = ctx.run(input, |ctx| app.sidebar(ctx));
+    };
+
+    // Frame that renders the inspector: consumes the one-shot flag and
+    // requests focus. One more frame lets egui grant it.
+    run(&mut app, Vec::new());
+    assert!(!app.focus_editor, "focus_editor must be one-shot");
+    run(&mut app, Vec::new());
+
+    // Typing without clicking the sidebar must land in the new box.
+    run(&mut app, vec![Event::Text("hi".to_owned())]);
+    assert_eq!(app.overlays.items[0].text, "hi");
 }
