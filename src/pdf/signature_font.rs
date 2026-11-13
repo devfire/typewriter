@@ -4,7 +4,7 @@
 //! use: the font file itself must travel with the document. Characters
 //! are encoded as two-byte CIDs equal to their TrueType glyph ids
 //! (`Identity-H`), widths come from the font's `hmtx` table, and a
-//! A `ToUnicode` `CMap` keeps the baked signature copy/paste-able.
+//! `ToUnicode` `CMap` keeps the baked signature copy/paste-able.
 
 use crate::overlay::OverlayText;
 use crate::signature::FONT_BYTES;

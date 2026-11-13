@@ -86,7 +86,6 @@ fn mode_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
     )
 }
 
-/// Muted rounded hint card with a title and one-line explanation.
 /// "Box width" row: fixed-width drag value with Auto reset, or the
 /// auto-fit state with a hint about the on-page resize handle.
 /// Returns whether the width changed.
@@ -124,6 +123,7 @@ fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::OverlayText) 
     changed
 }
 
+/// Muted rounded hint card with a title and one-line explanation.
 fn hint_card(ui: &mut egui::Ui, title: &str, body: &str) {
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)

@@ -10,7 +10,9 @@ use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 
 /// Caches the last rendered page texture, keyed by
-/// `(doc_generation, page, scale_bits)`.
+/// `(generation, page, (scale * 100.0) as i32)`: the scale is
+/// truncated to whole percents, so zooms within 1% share the
+/// cached texture.
 #[derive(Default)]
 pub struct PageRenderer {
     rendered: Option<(u64, usize, i32)>,
