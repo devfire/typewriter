@@ -195,3 +195,16 @@ fn signature_encode_uses_two_byte_glyph_ids() {
     assert_eq!(encoded.len(), 4);
     assert_ne!(&encoded[0..2], &[0, 0], "capital A mapped to .notdef");
 }
+
+#[test]
+fn signature_width_scales_from_actual_units_per_em() {
+    // PDF widths are in 1000-unit em space; a 2048-upem font (the common
+    // TrueType value) must scale down, not pass advances through raw.
+    assert_eq!(signature_font::width_1000(2_048, 2_048), 1_000);
+    assert_eq!(signature_font::width_1000(1_024, 2_048), 500);
+    assert_eq!(signature_font::width_1000(500, 1_000), 500);
+    // Rounds to nearest instead of truncating: 1/16 em = 62.5 -> 63.
+    assert_eq!(signature_font::width_1000(1, 16), 63);
+    // Invalid zero units-per-em must not panic (division by zero).
+    assert_eq!(signature_font::width_1000(700, 0), 700);
+}

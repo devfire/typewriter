@@ -37,16 +37,32 @@ pub(super) fn encode_hex(face: &Face<'_>, line: &str) -> Vec<u8> {
     bytes
 }
 
+/// Convert a horizontal advance in font units to PDF's 1000-unit em
+/// space (`/W` and `/DW` are always in 1000-unit space, regardless of
+/// the font's actual units-per-em). Rounds to nearest. A zero
+/// units-per-em (invalid font) leaves the advance unscaled rather
+/// than dividing by zero.
+#[must_use]
+pub(super) fn width_1000(advance: u16, units_per_em: u16) -> i64 {
+    if units_per_em == 0 {
+        return i64::from(advance);
+    }
+    let advance = i64::from(advance);
+    let units_per_em = i64::from(units_per_em);
+    (advance * 1_000 + units_per_em / 2) / units_per_em
+}
+
 /// Glyphs used by `boxes`: glyph id -> (source char, advance width in
-/// 1000-unit em space; the font's units-per-em is 1000).
+/// 1000-unit em space, scaled from the face's actual units-per-em).
 fn used_glyphs(face: &Face<'_>, boxes: &[&OverlayText]) -> BTreeMap<u16, (char, i64)> {
+    let units_per_em = face.units_per_em();
     let mut used = BTreeMap::new();
     for item in boxes {
         for c in item.signature_line().chars() {
             let gid = glyph_id(face, c);
             let width = face
                 .glyph_hor_advance(ttf_parser::GlyphId(gid))
-                .map_or(500, i64::from);
+                .map_or(500, |advance| width_1000(advance, units_per_em));
             used.entry(gid).or_insert((c, width));
         }
     }
