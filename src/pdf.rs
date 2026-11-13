@@ -11,10 +11,14 @@ use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat, dictionary};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
-/// Loaded PDF: sole owner of the file bytes in the application.
+/// Loaded PDF. The raw file bytes live in one `Arc<Vec<u8>>` shared
+/// with hayro's renderer (`PdfData: From<Arc<Vec<u8>>>`), so no
+/// full-file clone is retained; lopdf separately holds its own
+/// parsed representation in `doc`.
 pub struct PdfDoc {
-    pub bytes: Vec<u8>,
+    pub bytes: Arc<Vec<u8>>,
     doc: Document,
     page_ids: Vec<ObjectId>,
     /// Display size per page in points (rotation-aware).
@@ -27,8 +31,9 @@ pub struct PdfDoc {
 
 impl PdfDoc {
     pub fn open(path: &Path) -> Result<Self> {
-        let bytes =
-            std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+        let bytes = Arc::new(
+            std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+        );
         let doc = Document::load_mem(&bytes).context("failed to parse PDF")?;
         let page_ids: Vec<ObjectId> = doc.get_pages().into_values().collect();
         if page_ids.is_empty() {
@@ -371,8 +376,8 @@ fn winansi_char(c: char) -> u8 {
     }
 }
 
-fn hayro_page_sizes(bytes: &[u8]) -> Vec<(f32, f32)> {
-    let Ok(pdf) = hayro::hayro_syntax::Pdf::new(bytes.to_vec()) else {
+fn hayro_page_sizes(bytes: &Arc<Vec<u8>>) -> Vec<(f32, f32)> {
+    let Ok(pdf) = hayro::hayro_syntax::Pdf::new(Arc::clone(bytes)) else {
         return Vec::new();
     };
     pdf.pages()

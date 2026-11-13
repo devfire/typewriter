@@ -88,7 +88,8 @@ impl TypewriterApp {
                 return false;
             }
         };
-        let hayro_pdf = match hayro::hayro_syntax::Pdf::new(doc.bytes.clone()) {
+        // Shares the single `Arc<Vec<u8>>` allocation with `PdfDoc`.
+        let hayro_pdf = match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.bytes)) {
             Ok(pdf) => pdf,
             Err(hayro::hayro_syntax::LoadPdfError::Decryption(_)) => {
                 self.status = "Encrypted/password-protected PDFs are not supported.".to_string();

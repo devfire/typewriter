@@ -263,7 +263,7 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, std::path::PathBuf) {
     let rotate = rotate.rem_euclid(360);
     let swapped = matches!(rotate, 90 | 270);
     let pdf = PdfDoc {
-        bytes: Vec::new(),
+        bytes: Arc::new(Vec::new()),
         doc,
         page_ids: vec![page_id],
         sizes_pt: vec![if swapped {
@@ -424,7 +424,7 @@ fn multi_page_signature_bake_embeds_font_program_once() {
             .as_nanos()
     ));
     let mut pdf = PdfDoc {
-        bytes: Vec::new(),
+        bytes: Arc::new(Vec::new()),
         doc,
         page_ids,
         sizes_pt: vec![(612.0, 792.0); 2],
