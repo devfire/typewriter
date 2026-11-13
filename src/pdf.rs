@@ -187,9 +187,14 @@ impl PdfDoc {
     }
 
     /// Return the resource alias of the embedded Momo Signature font on
-    /// `page_id`. A font already present on the page is reused as-is.
-    /// Otherwise the shared Type0 font in `shared` is referenced from
-    /// this page, creating it (from `all_boxes`, the union of every
+    /// `page_id`, extending it with glyphs from `all_boxes` when it
+    /// already exists (on this page or elsewhere in the document, e.g.
+    /// after a save/reload): reusing a subset font as-is would bake
+    /// new characters at the default width with no `ToUnicode`
+    /// mapping. A font present only on another page is referenced
+    /// from this page instead of embedding a second copy. Otherwise
+    /// the shared Type0 font in `shared` is referenced from this
+    /// page, creating it (from `all_boxes`, the union of every
     /// signature box in the bake) on first use: the font program is
     /// embedded once per document, not once per page.
     fn ensure_signature(
@@ -199,16 +204,24 @@ impl PdfDoc {
         all_boxes: &[&OverlayText],
         shared: &mut Option<ObjectId>,
     ) -> Result<String> {
+        if let Some((alias, type0_id)) = signature_font::signature_font_on_page(doc, page_id) {
+            signature_font::extend_signature_font(doc, type0_id, face, all_boxes)?;
+            *shared = Some(type0_id);
+            return Ok(alias);
+        }
+        if let Some(type0_id) = shared.or_else(|| signature_font::find_signature_font(doc)) {
+            signature_font::extend_signature_font(doc, type0_id, face, all_boxes)?;
+            *shared = Some(type0_id);
+            let fonts = doc
+                .get_page_fonts(page_id)
+                .context("failed to read page fonts")?;
+            let alias = free_alias(&fonts, "F_SIG");
+            insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
+            return Ok(alias);
+        }
         let fonts = doc
             .get_page_fonts(page_id)
             .context("failed to read page fonts")?;
-        for (name, font) in &fonts {
-            if let Ok(base) = font.get(b"BaseFont")
-                && base.as_name().is_ok_and(|n| n == b"MomoSignature")
-            {
-                return Ok(String::from_utf8_lossy(name).into_owned());
-            }
-        }
         let alias = free_alias(&fonts, "F_SIG");
         let type0_id = *shared
             .get_or_insert_with(|| signature_font::create_signature_font(doc, face, all_boxes));

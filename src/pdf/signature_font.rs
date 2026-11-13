@@ -8,7 +8,7 @@
 
 use crate::overlay::OverlayText;
 use crate::signature::FONT_BYTES;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -68,8 +68,8 @@ fn used_glyphs(face: &Face<'_>, boxes: &[&OverlayText]) -> BTreeMap<u16, (char, 
     used
 }
 
-/// `ToUnicode` `CMap` text mapping glyph ids back to their source chars.
-fn to_unicode_cmap(used: &BTreeMap<u16, (char, i64)>) -> Vec<u8> {
+/// `ToUnicode` `CMap` text mapping glyph ids back to their source text.
+fn to_unicode_cmap(used: &BTreeMap<u16, String>) -> Vec<u8> {
     let mut out = String::from(
         "/CIDInit /ProcSet findresource begin\n\
          12 dict begin\n\
@@ -80,14 +80,12 @@ fn to_unicode_cmap(used: &BTreeMap<u16, (char, i64)>) -> Vec<u8> {
          1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
     );
     // bfchar blocks accept at most 100 entries.
-    let entries: Vec<(&u16, &(char, i64))> = used.iter().collect();
+    let entries: Vec<(&u16, &String)> = used.iter().collect();
     for chunk in entries.chunks(100) {
         writeln!(out, "{} beginbfchar", chunk.len()).expect("writing to a String cannot fail");
-        for (gid, (c, _)) in chunk {
-            let mut utf16 = [0_u16; 2];
-            let encoded = c.encode_utf16(&mut utf16);
-            let mut hex = String::with_capacity(encoded.len() * 4);
-            for unit in encoded {
+        for (gid, text) in chunk {
+            let mut hex = String::new();
+            for unit in text.encode_utf16() {
                 write!(hex, "{unit:04X}").expect("writing to a String cannot fail");
             }
             writeln!(out, "<{gid:04X}> <{hex}>").expect("writing to a String cannot fail");
@@ -96,6 +94,270 @@ fn to_unicode_cmap(used: &BTreeMap<u16, (char, i64)>) -> Vec<u8> {
     }
     out.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
     out.into_bytes()
+}
+
+/// Numeric PDF object as an integer width (`Real` truncated, matching
+/// how readers consume `/W` entries).
+fn numeric(obj: &Object) -> Option<i64> {
+    match obj {
+        Object::Integer(value) => Some(*value),
+        Object::Real(value) => {
+            #[allow(clippy::cast_possible_truncation)]
+            Some(*value as i64)
+        }
+        _ => None,
+    }
+}
+
+/// Parse a `CIDFont` `/W` array into glyph id -> width. Supports both
+/// PDF forms: `c [w ...]` (consecutive glyphs) and `cfirst clast w`.
+fn parse_widths(doc: &Document, array: &[Object]) -> Result<BTreeMap<u16, i64>> {
+    let mut widths = BTreeMap::new();
+    let mut idx = 0;
+    while idx < array.len() {
+        let first_obj = super::resolve(doc, &array[idx]).context("missing /W entry")?;
+        let first = numeric(first_obj).context("invalid /W glyph id")?;
+        let gid = u16::try_from(first).context("invalid /W glyph id")?;
+        let next = array
+            .get(idx + 1)
+            .and_then(|obj| super::resolve(doc, obj))
+            .context("missing /W value")?;
+        if let Object::Array(values) = next {
+            for (offset, value) in values.iter().enumerate() {
+                let value = super::resolve(doc, value).context("missing /W width")?;
+                let width = numeric(value).context("invalid /W width")?;
+                let glyph =
+                    u16::try_from(usize::from(gid) + offset).context("invalid /W glyph range")?;
+                widths.insert(glyph, width);
+            }
+            idx += 2;
+        } else {
+            let last = numeric(next).context("invalid /W range")?;
+            let last = u16::try_from(last).context("invalid /W range")?;
+            let width_obj = array
+                .get(idx + 2)
+                .and_then(|obj| super::resolve(doc, obj))
+                .context("missing /W range width")?;
+            let width = numeric(width_obj).context("invalid /W range width")?;
+            if last < gid {
+                bail!("invalid /W range");
+            }
+            for glyph in gid..=last {
+                widths.insert(glyph, width);
+            }
+            idx += 3;
+        }
+    }
+    Ok(widths)
+}
+
+/// Hex strings (`<...>`) inside one `beginbfchar`/`endbfchar` section.
+fn hex_tokens(section: &str) -> Vec<&str> {
+    let mut tokens = Vec::new();
+    let mut rest = section;
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('>') else { break };
+        tokens.push(&after[..close]);
+        rest = &after[close + 1..];
+    }
+    tokens
+}
+
+/// Decode a `ToUnicode` destination: UTF-16BE hex to text.
+fn decode_utf16_hex(hex: &str) -> Result<String> {
+    let hex = hex.trim();
+    if hex.is_empty() || !hex.len().is_multiple_of(4) {
+        bail!("invalid ToUnicode destination");
+    }
+    let mut units = Vec::with_capacity(hex.len() / 4);
+    for chunk in hex.as_bytes().chunks(4) {
+        let chunk = std::str::from_utf8(chunk).context("invalid ToUnicode destination")?;
+        units.push(u16::from_str_radix(chunk, 16).context("invalid ToUnicode destination")?);
+    }
+    String::from_utf16(&units).context("invalid ToUnicode destination")
+}
+
+/// Parse `beginbfchar` mappings from an existing `ToUnicode` `CMap`.
+/// `bfrange` mappings are not produced by this crate; refusing them
+/// keeps a foreign `CMap` from being silently truncated on rewrite.
+fn parse_to_unicode(content: &[u8]) -> Result<BTreeMap<u16, String>> {
+    let text = String::from_utf8_lossy(content);
+    if text.contains("beginbfrange") {
+        bail!("unsupported ToUnicode bfrange in existing signature font");
+    }
+    let mut map = BTreeMap::new();
+    let mut rest = text.as_ref();
+    while let Some(start) = rest.find("beginbfchar") {
+        let after = &rest[start + "beginbfchar".len()..];
+        let Some(end) = after.find("endbfchar") else {
+            bail!("unterminated ToUnicode bfchar");
+        };
+        let tokens = hex_tokens(&after[..end]);
+        if !tokens.len().is_multiple_of(2) {
+            bail!("invalid ToUnicode bfchar entry count");
+        }
+        for pair in tokens.chunks_exact(2) {
+            let gid = u16::from_str_radix(pair[0].trim(), 16)
+                .context("invalid ToUnicode glyph id")?;
+            map.insert(gid, decode_utf16_hex(pair[1])?);
+        }
+        rest = &after[end + "endbfchar".len()..];
+    }
+    Ok(map)
+}
+
+/// Extend an already-embedded signature font (found after a reload)
+/// with the glyphs used by `boxes`: merge their widths into the
+/// descendant `CIDFont`'s `/W` and their mappings into the `Type0`
+/// font's `ToUnicode` `CMap`. Existing entries are preserved, so a
+/// second session can sign with characters the first session never
+/// used without re-embedding the 406 KB font program.
+pub(super) fn extend_signature_font(
+    doc: &mut Document,
+    type0_id: ObjectId,
+    face: &Face<'_>,
+    boxes: &[&OverlayText],
+) -> Result<()> {
+    let used = used_glyphs(face, boxes);
+    if used.is_empty() {
+        return Ok(());
+    }
+    let (cid_id, to_unicode_id) = {
+        let type0 = doc
+            .get_dictionary(type0_id)
+            .context("existing signature font is not a dictionary")?;
+        let descendants = type0
+            .get(b"DescendantFonts")
+            .context("existing signature font has no descendant fonts")?;
+        let descendants = super::resolve(doc, descendants)
+            .and_then(|obj| obj.as_array().ok())
+            .context("existing signature font has invalid descendant fonts")?;
+        let descendant = descendants
+            .first()
+            .context("existing signature font has no descendant fonts")?;
+        let cid_id = descendant
+            .as_reference()
+            .context("existing signature CIDFont is not a reference")?;
+        let to_unicode_id = match type0.get(b"ToUnicode") {
+            Ok(obj) => Some(
+                obj.as_reference()
+                    .context("existing ToUnicode is not a reference")?,
+            ),
+            Err(_) => None,
+        };
+        (cid_id, to_unicode_id)
+    };
+    let mut widths = {
+        let cid = doc
+            .get_dictionary(cid_id)
+            .context("existing signature CIDFont is not a dictionary")?;
+        match cid.get(b"W") {
+            Ok(obj) => {
+                let array = super::resolve(doc, obj)
+                    .and_then(|resolved| resolved.as_array().ok())
+                    .context("existing signature font has invalid /W")?;
+                parse_widths(doc, array)?
+            }
+            Err(_) => BTreeMap::new(),
+        }
+    };
+    for (gid, (_, width)) in &used {
+        widths.insert(*gid, *width);
+    }
+    let mut unicode = match to_unicode_id {
+        Some(id) => {
+            let stream = doc
+                .get_object(id)
+                .and_then(|obj| obj.as_stream())
+                .context("existing ToUnicode is not a stream")?;
+            let content = stream
+                .get_plain_content()
+                .context("failed to read existing ToUnicode")?;
+            parse_to_unicode(&content)?
+        }
+        None => BTreeMap::new(),
+    };
+    for (gid, (c, _)) in &used {
+        unicode.insert(*gid, c.to_string());
+    }
+    let widths_array: Vec<Object> = widths
+        .iter()
+        .flat_map(|(gid, width)| {
+            [
+                i64::from(*gid).into(),
+                Object::Array(vec![(*width).into()]),
+            ]
+        })
+        .collect();
+    doc.get_dictionary_mut(cid_id)
+        .context("existing signature CIDFont is not a dictionary")?
+        .set("W", Object::Array(widths_array));
+    let cmap = to_unicode_cmap(&unicode);
+    if let Some(id) = to_unicode_id {
+        doc.get_object_mut(id)
+            .and_then(|obj| obj.as_stream_mut())
+            .context("existing ToUnicode is not a stream")?
+            .set_plain_content(cmap);
+    } else {
+        let new_id = doc.add_object(Object::Stream(Stream::new(Dictionary::new(), cmap)));
+        doc.get_dictionary_mut(type0_id)
+            .context("existing signature font is not a dictionary")?
+            .set("ToUnicode", Object::Reference(new_id));
+    }
+    Ok(())
+}
+
+/// `(alias, Type0 object id)` of a `MomoSignature` font referenced
+/// from `page_id`, if any. Only referenced fonts are returned:
+/// embedded fonts created by this crate are always references.
+pub(super) fn signature_font_on_page(
+    doc: &Document,
+    page_id: ObjectId,
+) -> Option<(String, ObjectId)> {
+    let target = super::find_resources_target(doc, page_id)?;
+    let resources = match target {
+        super::ResourcesTarget::Reference(id) => doc.get_dictionary(id).ok()?,
+        super::ResourcesTarget::Direct(node_id) => doc
+            .get_dictionary(node_id)
+            .ok()?
+            .get(b"Resources")
+            .ok()?
+            .as_dict()
+            .ok()?,
+    };
+    let fonts = super::resolve(doc, resources.get(b"Font").ok()?)?;
+    let fonts = fonts.as_dict().ok()?;
+    for (alias, value) in fonts {
+        let Ok(type0_id) = value.as_reference() else {
+            continue;
+        };
+        let Ok(font) = doc.get_dictionary(type0_id) else {
+            continue;
+        };
+        if font
+            .get(b"BaseFont")
+            .is_ok_and(|base| base.as_name().is_ok_and(|name| name == b"MomoSignature"))
+        {
+            return Some((String::from_utf8_lossy(alias).into_owned(), type0_id));
+        }
+    }
+    None
+}
+
+/// Object id of any `Type0` `MomoSignature` font already embedded in
+/// the document, regardless of which page references it.
+pub(super) fn find_signature_font(doc: &Document) -> Option<ObjectId> {
+    doc.objects.iter().find_map(|(id, obj)| {
+        let dict = obj.as_dict().ok()?;
+        let is_type0 = dict
+            .get(b"Subtype")
+            .is_ok_and(|subtype| subtype.as_name().is_ok_and(|name| name == b"Type0"));
+        let is_momo = dict
+            .get(b"BaseFont")
+            .is_ok_and(|base| base.as_name().is_ok_and(|name| name == b"MomoSignature"));
+        (is_type0 && is_momo).then_some(*id)
+    })
 }
 
 /// Create the shared Type0 signature font (descriptor + `CIDFont` +
@@ -157,7 +419,7 @@ pub(super) fn create_signature_font(
     });
     let to_unicode_id = doc.add_object(Object::Stream(Stream::new(
         Dictionary::new(),
-        to_unicode_cmap(&used),
+        to_unicode_cmap(&used.iter().map(|(gid, (c, _))| (*gid, c.to_string())).collect()),
     )));
     doc.add_object(dictionary! {
         "Type" => "Font",

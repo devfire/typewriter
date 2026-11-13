@@ -400,6 +400,70 @@ fn multi_page_signature_bake_embeds_font_program_once() {
 }
 
 #[test]
+fn reloaded_signature_bake_extends_embedded_font_with_new_glyphs() {
+    // First session signs with a subset of glyphs.
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let first = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
+    overlays.items[first].text = "Jane Doe".to_string();
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    drop(pdf);
+    // Second session: reload from disk and sign with characters the
+    // first signature never used (`Z`, `Q`, `u`, `i`). The reused
+    // embedded font must gain widths and ToUnicode entries for them.
+    let mut pdf = PdfDoc::open(&out).unwrap();
+    let mut overlays = OverlayState::default();
+    let second = overlays.add(0, 72.0, 600.0, BoxKind::Signature);
+    overlays.items[second].text = "Zed Quinn".to_string();
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    let extracted = pdf.doc.extract_text(&[1]).unwrap();
+    assert!(extracted.contains("Jane Doe"), "first: {extracted:?}");
+    assert!(extracted.contains("Zed Quinn"), "second: {extracted:?}");
+    // Explicit /W entry for a glyph only the second signature uses.
+    let face = signature_font::face().unwrap();
+    let z_gid = u16::from_be_bytes(
+        signature_font::encode_hex(&face, "Z")
+            .try_into()
+            .unwrap(),
+    );
+    let cid_font = pdf
+        .doc
+        .objects
+        .values()
+        .find_map(|obj| {
+            let dict = obj.as_dict().ok()?;
+            let is_cid = dict.get(b"Subtype").is_ok_and(|subtype| {
+                subtype.as_name().is_ok_and(|name| name == b"CIDFontType2")
+            });
+            is_cid.then_some(dict)
+        })
+        .expect("signed PDF has no CIDFont");
+    let widths = cid_font.get(b"W").unwrap().as_array().unwrap();
+    let mut explicit = Vec::new();
+    let mut idx = 0;
+    while idx + 1 < widths.len() {
+        if let (Ok(gid), Ok(run)) = (widths[idx].as_i64(), widths[idx + 1].as_array())
+            && gid == i64::from(z_gid)
+        {
+            explicit = run.clone();
+            break;
+        }
+        idx += 2;
+    }
+    assert_eq!(explicit.len(), 1, "no explicit /W width for glyph Z");
+    assert_ne!(explicit[0].as_i64().unwrap(), 500, "Z uses default width");
+    // Extending must not re-embed the font program.
+    let font_programs = pdf
+        .doc
+        .objects
+        .values()
+        .filter(|obj| matches!(obj, Object::Stream(stream) if stream.dict.has(b"Length1")))
+        .count();
+    assert_eq!(font_programs, 1, "font program re-embedded on reload");
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
 fn signature_encode_uses_two_byte_glyph_ids() {
     let face = signature_font::face().unwrap();
     let encoded = signature_font::encode_hex(&face, "Ab");
