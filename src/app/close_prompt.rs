@@ -6,11 +6,8 @@
 //! file was actually written, so cancelling the overwrite dialog or a
 //! failed write keeps the app (and the prompt) open.
 
-use super::{ACCENT, CloseState, DANGER, TypewriterApp};
+use super::{ACCENT, BTN_H, CloseState, DANGER, RADIUS, TypewriterApp};
 use eframe::egui;
-
-/// Height shared with the toolbar/sidebar buttons in `panels`.
-const BTN_H: f32 = 38.0;
 
 fn prompt_button(label: &str, filled: bool) -> egui::Button<'_> {
     let text = egui::RichText::new(label).size(15.0);
@@ -21,7 +18,7 @@ fn prompt_button(label: &str, filled: bool) -> egui::Button<'_> {
     };
     egui::Button::new(text)
         .min_size(egui::vec2(104.0, BTN_H))
-        .corner_radius(10)
+        .corner_radius(RADIUS)
 }
 
 impl TypewriterApp {
@@ -48,10 +45,14 @@ impl TypewriterApp {
             ui.set_min_width(360.0);
             ui.label(egui::RichText::new("Unsaved changes").size(18.0).strong());
             ui.add_space(6.0);
-            let file = self.pdf_path.as_ref().and_then(|p| p.file_name()).map_or_else(
-                || "This document".to_string(),
-                |name| format!("\u{201c}{}\u{201d}", name.to_string_lossy()),
-            );
+            let file = self
+                .pdf_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map_or_else(
+                    || "This document".to_string(),
+                    |name| format!("\u{201c}{}\u{201d}", name.to_string_lossy()),
+                );
             ui.label(
                 egui::RichText::new(format!(
                     "{file} has unsaved changes. Save them before closing?"

@@ -1,6 +1,6 @@
 //! Light/dark palettes, typography, and widget geometry.
 
-use super::ACCENT;
+use super::{ACCENT, RADIUS};
 use crate::signature;
 use eframe::egui;
 use std::sync::Arc;
@@ -68,8 +68,8 @@ fn themed_visuals(dark: bool) -> egui::Visuals {
     v.selection.bg_fill = ACCENT;
     v.selection.stroke = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
     v.window_corner_radius = egui::CornerRadius::same(14);
-    v.menu_corner_radius = egui::CornerRadius::same(10);
-    let radius = egui::CornerRadius::same(10);
+    v.menu_corner_radius = egui::CornerRadius::same(RADIUS);
+    let radius = egui::CornerRadius::same(RADIUS);
     for widgets in [
         &mut v.widgets.noninteractive,
         &mut v.widgets.inactive,
