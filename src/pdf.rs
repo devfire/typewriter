@@ -94,7 +94,18 @@ impl PdfDoc {
         } else {
             None
         };
+        // Every signature box in the bake: the one shared embedded
+        // font's widths/`ToUnicode` are built from this union.
+        let all_sig_boxes: Vec<&OverlayText> = by_page
+            .values()
+            .flat_map(|boxes| boxes.iter().copied())
+            .filter(|item| item.kind == BoxKind::Signature)
+            .collect();
         let mut staged = self.doc.clone();
+        // Object id of the shared Type0 signature font, created on
+        // first use in this bake and reused on every signed page so
+        // the font program is embedded once per document.
+        let mut shared_sig_font: Option<ObjectId> = None;
         for (page, boxes) in by_page {
             let page_id = self.page_ids[page];
             let page_box = self.boxes_pt[page];
@@ -117,7 +128,13 @@ impl PdfDoc {
                 .filter(|item| item.kind == BoxKind::Signature)
                 .collect();
             if let (false, Some(face)) = (sig_boxes.is_empty(), sig_face.as_ref()) {
-                let alias = Self::ensure_signature(&mut staged, page_id, face, &sig_boxes)?;
+                let alias = Self::ensure_signature(
+                    &mut staged,
+                    page_id,
+                    face,
+                    &all_sig_boxes,
+                    &mut shared_sig_font,
+                )?;
                 for item in sig_boxes {
                     operations.extend(box_operations(item, &alias, page_box, rotate, Some(face)));
                 }
@@ -170,12 +187,17 @@ impl PdfDoc {
     }
 
     /// Return the resource alias of the embedded Momo Signature font on
-    /// `page_id`, embedding it (once per page) if not already present.
+    /// `page_id`. A font already present on the page is reused as-is.
+    /// Otherwise the shared Type0 font in `shared` is referenced from
+    /// this page, creating it (from `all_boxes`, the union of every
+    /// signature box in the bake) on first use: the font program is
+    /// embedded once per document, not once per page.
     fn ensure_signature(
         doc: &mut Document,
         page_id: ObjectId,
         face: &ttf_parser::Face<'_>,
-        boxes: &[&OverlayText],
+        all_boxes: &[&OverlayText],
+        shared: &mut Option<ObjectId>,
     ) -> Result<String> {
         let fonts = doc
             .get_page_fonts(page_id)
@@ -188,7 +210,10 @@ impl PdfDoc {
             }
         }
         let alias = free_alias(&fonts, "F_SIG");
-        signature_font::ensure_signature_font(doc, page_id, face, boxes, alias)
+        let type0_id = *shared
+            .get_or_insert_with(|| signature_font::create_signature_font(doc, face, all_boxes));
+        insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
+        Ok(alias)
     }
 }
 

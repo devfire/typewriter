@@ -6,7 +6,6 @@
 //! (`Identity-H`), widths come from the font's `hmtx` table, and a
 //! A `ToUnicode` `CMap` keeps the baked signature copy/paste-able.
 
-use super::insert_font_entry;
 use crate::overlay::OverlayText;
 use crate::signature::FONT_BYTES;
 use anyhow::{Context, Result};
@@ -99,18 +98,21 @@ fn to_unicode_cmap(used: &BTreeMap<u16, (char, i64)>) -> Vec<u8> {
     out.into_bytes()
 }
 
-/// Resource alias for the embedded signature font on `page_id`, adding
-/// the Type0 font (descriptor + `CIDFont` + font stream) if absent.
-/// `alias_base` is made unique against the page's existing fonts by the
-/// caller's alias allocator; here we always use `F_SIG` numbering via
-/// `unique_alias` supplied by `super`.
-pub(super) fn ensure_signature_font(
+/// Create the shared Type0 signature font (descriptor + `CIDFont` +
+/// font stream) once per document and return its object id.
+///
+/// `boxes` must be every signature box in the document being baked,
+/// not just one page's: the single font's `/W` widths and `ToUnicode`
+/// `CMap` are built from this union, so glyphs used on any page are
+/// covered. Callers insert the returned id into each signed page's
+/// resources (see `super::insert_font_entry`); the 406 KB font
+/// program is therefore embedded exactly once, however many pages
+/// are signed.
+pub(super) fn create_signature_font(
     doc: &mut Document,
-    page_id: ObjectId,
     face: &Face<'_>,
     boxes: &[&OverlayText],
-    alias: String,
-) -> Result<String> {
+) -> ObjectId {
     let used = used_glyphs(face, boxes);
     let bbox = face.global_bounding_box();
     let font_stream = Stream::new(
@@ -157,14 +159,12 @@ pub(super) fn ensure_signature_font(
         Dictionary::new(),
         to_unicode_cmap(&used),
     )));
-    let type0_id = doc.add_object(dictionary! {
+    doc.add_object(dictionary! {
         "Type" => "Font",
         "Subtype" => "Type0",
         "BaseFont" => "MomoSignature",
         "Encoding" => "Identity-H",
         "DescendantFonts" => vec![Object::Reference(cid_font_id)],
         "ToUnicode" => Object::Reference(to_unicode_id),
-    });
-    insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
-    Ok(alias)
+    })
 }

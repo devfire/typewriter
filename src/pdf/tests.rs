@@ -311,6 +311,95 @@ fn signature_bake_embeds_momo_and_is_extractable() {
 }
 
 #[test]
+fn multi_page_signature_bake_embeds_font_program_once() {
+    // Two pages signed in one bake share a single embedded font: the
+    // font program stream (`Length1` = the TrueType file) and its
+    // descriptor must each appear exactly once, however many pages
+    // reference the font.
+    let mut doc = Document::new();
+    let page_tree_id = doc.new_object_id();
+    let page_ids: Vec<ObjectId> = (0..2)
+        .map(|_| {
+            doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => Object::Reference(page_tree_id),
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            })
+        })
+        .collect();
+    doc.set_object(
+        page_tree_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => page_ids
+                .iter()
+                .map(|id| Object::Reference(*id))
+                .collect::<Vec<_>>(),
+            "Count" => 2,
+        },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(page_tree_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    let out = std::env::temp_dir().join(format!(
+        "pdf-editor-test-{}-multipage-sig-{}.pdf",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let mut pdf = PdfDoc {
+        bytes: Vec::new(),
+        doc,
+        page_ids,
+        sizes_pt: vec![(612.0, 792.0); 2],
+        boxes_pt: vec![(0.0, 0.0, 612.0, 792.0); 2],
+        rotations: vec![0; 2],
+    };
+    let mut overlays = OverlayState::default();
+    // Distinct glyphs per page: the shared font's widths/`ToUnicode`
+    // must cover the union, or the second page loses extraction.
+    let first = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
+    overlays.items[first].text = "Jane Doe".to_string();
+    let second = overlays.add(1, 72.0, 700.0, BoxKind::Signature);
+    overlays.items[second].text = "Zed Quinn".to_string();
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    let font_programs = pdf
+        .doc
+        .objects
+        .values()
+        .filter(|obj| matches!(obj, Object::Stream(stream) if stream.dict.has(b"Length1")))
+        .count();
+    assert_eq!(font_programs, 1, "font program embedded per page");
+    let descriptors = pdf
+        .doc
+        .objects
+        .values()
+        .filter(|obj| {
+            matches!(obj, Object::Dictionary(dict) if dict.has(b"FontFile2"))
+        })
+        .count();
+    assert_eq!(descriptors, 1, "font descriptor embedded per page");
+    // Both pages reference a Momo font and extract their signature.
+    for page_id in &pdf.page_ids {
+        let fonts = pdf.doc.get_page_fonts(*page_id).unwrap();
+        assert!(
+            fonts.values().any(|font| font
+                .get(b"BaseFont")
+                .is_ok_and(|base| base.as_name().is_ok_and(|n| n == b"MomoSignature"))),
+            "signed page does not reference MomoSignature"
+        );
+    }
+    let extracted = pdf.doc.extract_text(&[1, 2]).unwrap();
+    assert!(extracted.contains("Jane Doe"), "page 1: {extracted:?}");
+    assert!(extracted.contains("Zed Quinn"), "page 2: {extracted:?}");
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
 fn signature_encode_uses_two_byte_glyph_ids() {
     let face = signature_font::face().unwrap();
     let encoded = signature_font::encode_hex(&face, "Ab");
