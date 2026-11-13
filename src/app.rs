@@ -4,7 +4,10 @@ use crate::overlay::{self, OverlayState};
 use crate::pdf::PdfDoc;
 use crate::render::PageRenderer;
 use eframe::egui;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 mod close_prompt;
 mod panels;
 #[cfg(test)]
@@ -35,6 +38,40 @@ enum Mode {
     Sign,
 }
 
+/// Identity of the inputs that determine a box's laid-out lines and
+/// measured auto width. The text itself is hashed so keying the cache
+/// never clones the `String`.
+#[derive(Debug, PartialEq, Eq)]
+struct BoxLayoutKey {
+    text_hash: u64,
+    size_pt_bits: u32,
+    kind: crate::overlay::BoxKind,
+    width_pt_bits: Option<u32>,
+    zoom_bits: u32,
+}
+
+/// Laid-out display lines and measured auto width for one box,
+/// reused across frames until its `BoxLayoutKey` changes. Sharing
+/// the lines behind an `Arc` makes a cache hit allocation-free
+/// apart from the `Arc` bump.
+struct CachedBoxLayout {
+    key: BoxLayoutKey,
+    lines: Arc<[String]>,
+    auto_width_pt: f32,
+}
+
+fn box_layout_key(item: &crate::overlay::OverlayText, zoom: f32) -> BoxLayoutKey {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    item.text.hash(&mut hasher);
+    BoxLayoutKey {
+        text_hash: hasher.finish(),
+        size_pt_bits: item.size_pt.to_bits(),
+        kind: item.kind,
+        width_pt_bits: item.width_pt.map(f32::to_bits),
+        zoom_bits: zoom.to_bits(),
+    }
+}
+
 pub struct TypewriterApp {
     pdf_path: Option<PathBuf>,
     pdf_doc: Option<PdfDoc>,
@@ -50,6 +87,10 @@ pub struct TypewriterApp {
     /// Box currently being width-resized via its corner handle, if any.
     resize_box: Option<usize>,
     close_state: CloseState,
+    /// Per-box display layout cache, keyed by global box index and
+    /// validated by `BoxLayoutKey`, so stale entries left behind by
+    /// index shifts (removal) are recomputed rather than trusted.
+    box_layouts: HashMap<usize, CachedBoxLayout>,
 }
 
 impl TypewriterApp {
@@ -69,6 +110,7 @@ impl TypewriterApp {
             fit_pending: false,
             resize_box: None,
             close_state: CloseState::Idle,
+            box_layouts: HashMap::new(),
         }
     }
 
@@ -371,6 +413,34 @@ impl TypewriterApp {
             });
     }
 
+    /// Display lines and measured auto width for box `idx`, served
+    /// from `box_layouts` when text, size, kind, fixed width, and
+    /// zoom are unchanged, so the steady-state frame path performs
+    /// no glyph layout and no `String`/`Vec<String>` cloning. The
+    /// expensive layout runs only on a cache miss.
+    fn box_layout(&mut self, ui: &egui::Ui, idx: usize, zoom: f32) -> Option<(Arc<[String]>, f32)> {
+        let item = self.overlays.items.get(idx)?;
+        let key = box_layout_key(item, zoom);
+        if let Some(cached) = self.box_layouts.get(&idx)
+            && cached.key == key
+        {
+            return Some((Arc::clone(&cached.lines), cached.auto_width_pt));
+        }
+        let font = box_font(item, zoom);
+        let lines = box_display_lines(ui, item, &font, zoom);
+        let auto_width_pt = measured_width_pt(ui, &lines, &font, zoom, item.kind);
+        let lines: Arc<[String]> = Arc::from(lines);
+        self.box_layouts.insert(
+            idx,
+            CachedBoxLayout {
+                key,
+                lines: Arc::clone(&lines),
+                auto_width_pt,
+            },
+        );
+        Some((lines, auto_width_pt))
+    }
+
     #[allow(clippy::cast_precision_loss)]
     fn draw_boxes(
         &mut self,
@@ -380,19 +450,30 @@ impl TypewriterApp {
         zoom: f32,
         page_resp: &egui::Response,
     ) {
-        let boxes: Vec<(usize, crate::overlay::OverlayText)> = self
+        self.box_layouts
+            .retain(|idx, _| *idx < self.overlays.items.len());
+        // Indices only: boxes are never cloned. Each box's scalar
+        // fields are copied out below before any `&mut self` call,
+        // and its lines/width come from the layout cache.
+        let box_indices: Vec<usize> = self
             .overlays
-            .by_page(page)
-            .into_iter()
-            .map(|(idx, item)| (idx, item.clone()))
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.page == page)
+            .map(|(idx, _)| idx)
             .collect();
-        let mut box_rects: Vec<egui::Rect> = Vec::with_capacity(boxes.len());
-        for (idx, item) in &boxes {
-            let top_left = overlay::pdf_top_to_screen(item.x_pt, item.y_top_pt, page_rect, zoom);
+        let mut box_rects: Vec<egui::Rect> = Vec::with_capacity(box_indices.len());
+        for idx in box_indices {
+            let Some((display_lines, auto_width_pt)) = self.box_layout(ui, idx, zoom) else {
+                continue;
+            };
+            let Some(item) = self.overlays.items.get(idx) else {
+                continue;
+            };
             let font = box_font(item, zoom);
-            let display_lines = box_display_lines(ui, item, &font, zoom);
+            let top_left = overlay::pdf_top_to_screen(item.x_pt, item.y_top_pt, page_rect, zoom);
             let line_count = display_lines.len().max(1) as f32;
-            let auto_width_pt = measured_width_pt(ui, &display_lines, &font, zoom, item.kind);
             let width_pt = item.width_pt.map_or(auto_width_pt, |w| w.max(24.0));
             let height_pt = line_count * overlay::LEADING * item.size_pt;
             // The script font's glyphs rise ~1.35 em above and swash
@@ -400,6 +481,10 @@ impl TypewriterApp {
             // (0.8/0.4 em). Pad the visual box so they are not clipped;
             // the baseline (and thus the baked PDF) is unaffected.
             let (pad_top_pt, pad_bottom_pt) = box_vertical_pad_pt(item);
+            let size_pt = item.size_pt;
+            let kind = item.kind;
+            let text_is_empty = item.text.is_empty();
+            let color = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
             let rect = egui::Rect::from_min_max(
                 egui::pos2(top_left.x, top_left.y - pad_top_pt * zoom),
                 egui::pos2(
@@ -408,11 +493,11 @@ impl TypewriterApp {
                 ),
             );
             box_rects.push(rect);
-            let selected = self.overlays.selected == Some(*idx);
+            let selected = self.overlays.selected == Some(idx);
             let handle_rect =
                 egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0));
             if selected {
-                self.resize_handle(ui, *idx, handle_rect, width_pt, zoom);
+                self.resize_handle(ui, idx, handle_rect, width_pt, zoom);
             }
             let resp = ui.interact(
                 rect,
@@ -420,12 +505,12 @@ impl TypewriterApp {
                 egui::Sense::click_and_drag(),
             );
             if resp.clicked() {
-                self.overlays.selected = Some(*idx);
+                self.overlays.selected = Some(idx);
             }
-            if resp.dragged() && self.resize_box != Some(*idx) {
-                self.overlays.selected = Some(*idx);
+            if resp.dragged() && self.resize_box != Some(idx) {
+                self.overlays.selected = Some(idx);
                 let delta = resp.drag_delta();
-                if let Some(current) = self.overlays.items.get_mut(*idx) {
+                if let Some(current) = self.overlays.items.get_mut(idx) {
                     current.x_pt = (current.x_pt + delta.x / zoom).max(0.0);
                     current.y_top_pt = (current.y_top_pt + delta.y / zoom).max(0.0);
                 }
@@ -441,10 +526,8 @@ impl TypewriterApp {
                     egui::StrokeKind::Outside,
                 );
             }
-            let color = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
             paint_box_text(
                 &painter,
-                item,
                 &display_lines,
                 &font,
                 color,
@@ -452,6 +535,9 @@ impl TypewriterApp {
                 zoom,
                 selected,
                 pad_top_pt,
+                size_pt,
+                kind,
+                text_is_empty,
             );
             if selected {
                 painter.rect_filled(handle_rect, 3.0, ACCENT);
@@ -463,7 +549,18 @@ impl TypewriterApp {
                 );
             }
         }
-        // Click on empty page area creates a box in Type / Sign mode.
+        self.place_box_on_click(page, page_rect, zoom, page_resp, &box_rects);
+    }
+
+    /// Click on empty page area creates a box in Type / Sign mode.
+    fn place_box_on_click(
+        &mut self,
+        page: usize,
+        page_rect: egui::Rect,
+        zoom: f32,
+        page_resp: &egui::Response,
+        box_rects: &[egui::Rect],
+    ) {
         let new_kind = match self.mode {
             Mode::Type => Some(crate::overlay::BoxKind::Text),
             Mode::Sign => Some(crate::overlay::BoxKind::Signature),
@@ -528,7 +625,6 @@ impl TypewriterApp {
 #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
 fn paint_box_text(
     painter: &egui::Painter,
-    item: &crate::overlay::OverlayText,
     display_lines: &[String],
     font: &egui::FontId,
     color: egui::Color32,
@@ -536,11 +632,14 @@ fn paint_box_text(
     zoom: f32,
     selected: bool,
     pad_top_pt: f32,
+    size_pt: f32,
+    kind: crate::overlay::BoxKind,
+    text_is_empty: bool,
 ) {
     for (line_idx, line) in display_lines.iter().enumerate() {
         let y = rect.min.y
-            + (pad_top_pt + overlay::ASCENT * item.size_pt) * zoom
-            + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom;
+            + (pad_top_pt + overlay::ASCENT * size_pt) * zoom
+            + (line_idx as f32) * overlay::LEADING * size_pt * zoom;
         painter.text(
             egui::pos2(rect.min.x, y),
             egui::Align2::LEFT_BOTTOM,
@@ -549,14 +648,14 @@ fn paint_box_text(
             color,
         );
     }
-    if item.text.is_empty() && selected {
+    if text_is_empty && selected {
         painter.text(
             egui::pos2(
                 rect.min.x,
-                rect.min.y + (pad_top_pt + overlay::ASCENT * item.size_pt) * zoom,
+                rect.min.y + (pad_top_pt + overlay::ASCENT * size_pt) * zoom,
             ),
             egui::Align2::LEFT_BOTTOM,
-            match item.kind {
+            match kind {
                 crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
                 crate::overlay::BoxKind::Text => "Type here\u{2026}",
             },

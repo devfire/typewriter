@@ -19,6 +19,7 @@ fn test_app() -> TypewriterApp {
         fit_pending: false,
         resize_box: None,
         close_state: CloseState::Idle,
+        box_layouts: std::collections::HashMap::new(),
     }
 }
 
