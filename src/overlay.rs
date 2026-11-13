@@ -154,6 +154,43 @@ pub fn pdf_top_to_screen(x_pt: f32, y_top_pt: f32, page_rect: Rect, zoom: f32) -
     )
 }
 
+/// Top-left-origin baseline: PDF y of the first line's baseline.
+#[must_use]
+pub fn baseline_y(y1: f32, y_top_pt: f32, size_pt: f32) -> f32 {
+    y1 - y_top_pt - ASCENT * size_pt
+}
+
+/// `Tm` operands `[a b c d e f]` for a box on a page with `/Rotate`
+/// `rotate` (clockwise display rotation, in degrees).
+///
+/// Overlay coordinates are display space: `x_pt` measured from the
+/// displayed page's left edge, `y_top_pt` from its top edge. The
+/// linear part counter-rotates the glyphs in unrotated user space so
+/// they read upright once the renderer applies `/Rotate`, and
+/// `(e, f)` maps the first line's baseline origin back into user
+/// space. `/Rotate` values that are not a multiple of 90 are invalid
+/// per the PDF spec and are treated as 0, matching how `sizes_pt`
+/// only swaps the display size for 90/270.
+#[must_use]
+pub fn text_matrix(item: &OverlayText, page_box: (f32, f32, f32, f32), rotate: i64) -> [f32; 6] {
+    let (x0, y0, x1, y1) = page_box;
+    // Distance from the displayed page's top edge to the baseline.
+    let baseline_top = item.y_top_pt + ASCENT * item.size_pt;
+    match rotate.rem_euclid(360) {
+        90 => [0.0, 1.0, -1.0, 0.0, x0 + baseline_top, y0 + item.x_pt],
+        180 => [-1.0, 0.0, 0.0, -1.0, x1 - item.x_pt, y0 + baseline_top],
+        270 => [0.0, -1.0, 1.0, 0.0, x1 - baseline_top, y1 - item.x_pt],
+        _ => [
+            1.0,
+            0.0,
+            0.0,
+            1.0,
+            x0 + item.x_pt,
+            baseline_y(y1, item.y_top_pt, item.size_pt),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

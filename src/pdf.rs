@@ -5,7 +5,7 @@
 //! `add_to_page_content`. Existing Helvetica fonts are reused; a new
 //! standard-14 Helvetica is added only when the page has none.
 
-use crate::overlay::{ASCENT, BoxKind, LEADING, OverlayState, OverlayText};
+use crate::overlay::{BoxKind, LEADING, OverlayState, OverlayText, text_matrix};
 use anyhow::{Context, Result, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat, dictionary};
@@ -21,6 +21,8 @@ pub struct PdfDoc {
     pub sizes_pt: Vec<(f32, f32)>,
     /// `(x0, y0, x1, y1)` `MediaBox` (fallback `CropBox`) per page.
     boxes_pt: Vec<(f32, f32, f32, f32)>,
+    /// Clockwise `/Rotate` per page, normalized to `0..360`.
+    rotations: Vec<i64>,
 }
 
 impl PdfDoc {
@@ -34,6 +36,7 @@ impl PdfDoc {
         }
         let mut boxes_pt = Vec::with_capacity(page_ids.len());
         let mut sizes_pt = Vec::with_capacity(page_ids.len());
+        let mut rotations = Vec::with_capacity(page_ids.len());
         let mut hayro_sizes: Option<Vec<(f32, f32)>> = None;
         for (idx, page_id) in page_ids.iter().enumerate() {
             let page_box = page_box(&doc, *page_id).unwrap_or_else(|| {
@@ -48,7 +51,9 @@ impl PdfDoc {
             boxes_pt.push(page_box);
             let (w, h) = (page_box.2 - page_box.0, page_box.3 - page_box.1);
             let rotate = inherited_int(&doc, *page_id, b"Rotate").unwrap_or(0);
-            let rotated = matches!(((rotate % 360) + 360) % 360, 90 | 270);
+            let rotate = rotate.rem_euclid(360);
+            rotations.push(rotate);
+            let rotated = matches!(rotate, 90 | 270);
             sizes_pt.push(if rotated { (h, w) } else { (w, h) });
         }
         Ok(Self {
@@ -57,6 +62,7 @@ impl PdfDoc {
             page_ids,
             sizes_pt,
             boxes_pt,
+            rotations,
         })
     }
 
@@ -92,6 +98,7 @@ impl PdfDoc {
         for (page, boxes) in by_page {
             let page_id = self.page_ids[page];
             let page_box = self.boxes_pt[page];
+            let rotate = self.rotations[page];
             let mut operations = Vec::new();
             let text_boxes: Vec<&OverlayText> = boxes
                 .iter()
@@ -101,7 +108,7 @@ impl PdfDoc {
             if !text_boxes.is_empty() {
                 let alias = Self::ensure_helvetica(&mut staged, page_id)?;
                 for item in text_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, None));
+                    operations.extend(box_operations(item, &alias, page_box, rotate, None));
                 }
             }
             let sig_boxes: Vec<&OverlayText> = boxes
@@ -112,7 +119,7 @@ impl PdfDoc {
             if let (false, Some(face)) = (sig_boxes.is_empty(), sig_face.as_ref()) {
                 let alias = Self::ensure_signature(&mut staged, page_id, face, &sig_boxes)?;
                 for item in sig_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, Some(face)));
+                    operations.extend(box_operations(item, &alias, page_box, rotate, Some(face)));
                 }
             }
             staged
@@ -200,22 +207,20 @@ fn free_alias(fonts: &std::collections::BTreeMap<Vec<u8>, &Dictionary>, base: &s
     }
 }
 
-/// Top-left-origin baseline: PDF y of the first line's baseline.
-#[must_use]
-pub fn baseline_y(y1: f32, y_top_pt: f32, size_pt: f32) -> f32 {
-    y1 - y_top_pt - ASCENT * size_pt
-}
-
 /// Build the `q BT ... ET Q` operations for one box.
 fn box_operations(
     item: &OverlayText,
     alias: &str,
     page_box: (f32, f32, f32, f32),
+    rotate: i64,
     sig_face: Option<&ttf_parser::Face<'_>>,
 ) -> Vec<Operation> {
-    let (x0, _y0, _x1, y1) = page_box;
     let size = item.size_pt;
     let leading = LEADING * size;
+    let tm: Vec<Object> = text_matrix(item, page_box, rotate)
+        .into_iter()
+        .map(Object::Real)
+        .collect();
     let mut ops = vec![
         Operation::new("q", vec![]),
         Operation::new("BT", vec![]),
@@ -228,17 +233,7 @@ fn box_operations(
             ],
         ),
         Operation::new("Tf", vec![alias.into(), Object::Real(size)]),
-        Operation::new(
-            "Tm",
-            vec![
-                Object::Real(1.0),
-                Object::Real(0.0),
-                Object::Real(0.0),
-                Object::Real(1.0),
-                Object::Real(x0 + item.x_pt),
-                Object::Real(baseline_y(y1, item.y_top_pt, size)),
-            ],
-        ),
+        Operation::new("Tm", tm),
     ];
     let lines: Vec<Object> = match (item.kind, sig_face) {
         (BoxKind::Signature, Some(face)) => vec![Object::String(

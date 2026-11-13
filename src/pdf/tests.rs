@@ -1,4 +1,5 @@
 use super::*;
+use crate::overlay::baseline_y;
 
 #[test]
 fn winansi_encodes_e_acute_as_single_byte() {
@@ -32,7 +33,7 @@ fn two_lines_produce_two_tj_and_one_td() {
         color: [0, 0, 255],
         width_pt: None,
     };
-    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), None);
+    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
     assert_eq!(
         operators,
@@ -43,14 +44,66 @@ fn two_lines_produce_two_tj_and_one_td() {
     assert!((td.operands[1].as_float().unwrap() + 14.4).abs() < 0.001);
 }
 
+/// Operands of the first `Tm` operator in a decoded content stream.
+fn tm_operands(content: &[u8]) -> Vec<f32> {
+    let text = String::from_utf8(content.to_vec()).unwrap();
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let pos = tokens.iter().position(|token| *token == "Tm").unwrap();
+    tokens[pos - 6..pos]
+        .iter()
+        .map(|token| token.parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn rotated_pages_bake_text_at_previewed_position() {
+    // 612x792 page, box at display (72, 72), 12pt text: the baseline
+    // sits 72 + 0.8 * 12 = 81.6pt below the displayed top edge.
+    for (rotate, size, expected) in [
+        (90, (792.0, 612.0), [0.0, 1.0, -1.0, 0.0, 81.6, 72.0]),
+        (180, (612.0, 792.0), [-1.0, 0.0, 0.0, -1.0, 540.0, 81.6]),
+        (270, (792.0, 612.0), [0.0, -1.0, 1.0, 0.0, 530.4, 720.0]),
+    ] {
+        let (mut fixture, out) = fixture_pdf_rotated(rotate);
+        let input = std::env::temp_dir().join(format!(
+            "pdf-editor-test-{}-rotated-{rotate}.pdf",
+            std::process::id()
+        ));
+        fixture.doc.save(&input).unwrap();
+        // Go through `open` so the `/Rotate` inheritance is exercised.
+        let mut pdf = PdfDoc::open(&input).unwrap();
+        assert_eq!(pdf.sizes_pt, vec![size], "rotate {rotate}");
+        let page_id = pdf.page_ids[0];
+        let mut overlays = OverlayState::default();
+        let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+        overlays.items[idx].text = "Hello".to_string();
+        pdf.bake_and_save(&mut overlays, &out).unwrap();
+        let content = pdf.doc.get_page_content(page_id).unwrap();
+        let tm = tm_operands(&content);
+        assert_eq!(tm.len(), expected.len(), "rotate {rotate}");
+        for (actual, want) in tm.iter().zip(expected) {
+            assert!((actual - want).abs() < 0.001, "rotate {rotate}: {tm:?}");
+        }
+        assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&input);
+    }
+}
+
 /// Build a minimal one-page `PdfDoc` in memory.
 fn fixture_pdf() -> (PdfDoc, std::path::PathBuf) {
+    fixture_pdf_rotated(0)
+}
+
+/// Build a minimal one-page `PdfDoc` whose page has `/Rotate rotate`.
+fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, std::path::PathBuf) {
     let mut doc = Document::new();
     let page_tree_id = doc.new_object_id();
     let page_id = doc.add_object(dictionary! {
         "Type" => "Page",
         "Parent" => Object::Reference(page_tree_id),
         "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+        "Rotate" => Object::Integer(rotate),
     });
     doc.set_object(
         page_tree_id,
@@ -73,12 +126,19 @@ fn fixture_pdf() -> (PdfDoc, std::path::PathBuf) {
             .unwrap()
             .as_nanos()
     ));
+    let rotate = rotate.rem_euclid(360);
+    let swapped = matches!(rotate, 90 | 270);
     let pdf = PdfDoc {
         bytes: Vec::new(),
         doc,
         page_ids: vec![page_id],
-        sizes_pt: vec![(612.0, 792.0)],
+        sizes_pt: vec![if swapped {
+            (792.0, 612.0)
+        } else {
+            (612.0, 792.0)
+        }],
         boxes_pt: vec![(0.0, 0.0, 612.0, 792.0)],
+        rotations: vec![rotate],
     };
     (pdf, out)
 }
