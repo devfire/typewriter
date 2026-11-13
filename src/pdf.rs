@@ -67,6 +67,11 @@ impl PdfDoc {
     /// Bake every non-empty overlay box into its page as a new content
     /// stream and save to `out`. On success the baked boxes are drained
     /// from `overlays` (second save therefore adds zero new streams).
+    ///
+    /// The bake is staged on a clone of the document and swapped into
+    /// `self` only after the save succeeds, so a failure on any page or
+    /// during the write leaves `self.doc` and `overlays` unchanged and a
+    /// retry cannot double-bake earlier pages.
     pub fn bake_and_save(&mut self, overlays: &mut OverlayState, out: &Path) -> Result<()> {
         let mut by_page: BTreeMap<usize, Vec<&OverlayText>> = BTreeMap::new();
         for item in overlays.items.iter().filter(|item| !item.is_empty()) {
@@ -83,6 +88,7 @@ impl PdfDoc {
         } else {
             None
         };
+        let mut staged = self.doc.clone();
         for (page, boxes) in by_page {
             let page_id = self.page_ids[page];
             let page_box = self.boxes_pt[page];
@@ -93,7 +99,7 @@ impl PdfDoc {
                 .filter(|item| item.kind == BoxKind::Text)
                 .collect();
             if !text_boxes.is_empty() {
-                let alias = self.ensure_helvetica(page_id)?;
+                let alias = Self::ensure_helvetica(&mut staged, page_id)?;
                 for item in text_boxes {
                     operations.extend(box_operations(item, &alias, page_box, None));
                 }
@@ -104,27 +110,27 @@ impl PdfDoc {
                 .filter(|item| item.kind == BoxKind::Signature)
                 .collect();
             if let (false, Some(face)) = (sig_boxes.is_empty(), sig_face.as_ref()) {
-                let alias = self.ensure_signature(page_id, face, &sig_boxes)?;
+                let alias = Self::ensure_signature(&mut staged, page_id, face, &sig_boxes)?;
                 for item in sig_boxes {
                     operations.extend(box_operations(item, &alias, page_box, Some(face)));
                 }
             }
-            self.doc
+            staged
                 .add_to_page_content(page_id, Content { operations })
                 .context("failed to append overlay content stream")?;
         }
-        self.doc
+        staged
             .save(out)
             .with_context(|| format!("failed to save {}", out.display()))?;
+        self.doc = staged;
         overlays.clear_baked();
         Ok(())
     }
 
     /// Return the resource alias of a usable Helvetica on `page_id`,
     /// adding a standard-14 Helvetica if the page has none.
-    fn ensure_helvetica(&mut self, page_id: ObjectId) -> Result<String> {
-        let fonts = self
-            .doc
+    fn ensure_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<String> {
+        let fonts = doc
             .get_page_fonts(page_id)
             .context("failed to read page fonts")?;
         for (name, font) in &fonts {
@@ -146,26 +152,25 @@ impl PdfDoc {
         } else {
             "F_TW".to_string()
         };
-        let font_id = self.doc.add_object(dictionary! {
+        let font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
             "BaseFont" => "Helvetica",
             "Encoding" => "WinAnsiEncoding",
         });
-        insert_font_entry(&mut self.doc, page_id, alias.as_bytes(), font_id)?;
+        insert_font_entry(doc, page_id, alias.as_bytes(), font_id)?;
         Ok(alias)
     }
 
     /// Return the resource alias of the embedded Momo Signature font on
     /// `page_id`, embedding it (once per page) if not already present.
     fn ensure_signature(
-        &mut self,
+        doc: &mut Document,
         page_id: ObjectId,
         face: &ttf_parser::Face<'_>,
         boxes: &[&OverlayText],
     ) -> Result<String> {
-        let fonts = self
-            .doc
+        let fonts = doc
             .get_page_fonts(page_id)
             .context("failed to read page fonts")?;
         for (name, font) in &fonts {
@@ -176,7 +181,7 @@ impl PdfDoc {
             }
         }
         let alias = free_alias(&fonts, "F_SIG");
-        signature_font::ensure_signature_font(&mut self.doc, page_id, face, boxes, alias)
+        signature_font::ensure_signature_font(doc, page_id, face, boxes, alias)
     }
 }
 

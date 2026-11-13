@@ -103,6 +103,43 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
 }
 
 #[test]
+fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
+    let (mut pdf, out) = fixture_pdf();
+    let page_id = pdf.page_ids[0];
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.items[idx].text = "Hello".to_string();
+    // Saving into a missing directory fails after the bake has staged
+    // its content stream and font objects.
+    let bad_out = std::env::temp_dir()
+        .join(format!(
+            "pdf-editor-missing-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+        .join("out.pdf");
+    assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
+    // Neither the document nor the overlays were mutated by the failure.
+    assert_eq!(pdf.doc.get_page_contents(page_id).len(), 0);
+    assert_eq!(overlays.items.len(), 1);
+    assert!(overlays.dirty);
+    // Retry against a writable path bakes the text exactly once.
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    assert!(overlays.items.is_empty());
+    assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
+    let text = pdf.doc.extract_text(&[1]).unwrap();
+    assert_eq!(
+        text.matches("Hello").count(),
+        1,
+        "text baked more than once: {text:?}"
+    );
+    let _ = std::fs::remove_file(&out);
+}
+
+#[test]
 fn existing_ftw_alias_is_not_overwritten() {
     let (mut pdf, _out) = fixture_pdf();
     let page_id = pdf.page_ids[0];
@@ -118,12 +155,15 @@ fn existing_ftw_alias_is_not_overwritten() {
         .get_dictionary_mut(page_id)
         .unwrap()
         .set("Resources", resources);
-    let alias = pdf.ensure_helvetica(page_id).unwrap();
+    let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
     assert_eq!(alias, "F_TW1");
     let fonts = pdf.doc.get_page_fonts(page_id).unwrap();
     assert!(fonts.contains_key(b"F_TW1".as_slice()));
     // Existing Helvetica is reused on the second call.
-    assert_eq!(pdf.ensure_helvetica(page_id).unwrap(), "F_TW1");
+    assert_eq!(
+        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        "F_TW1"
+    );
 }
 
 #[test]
