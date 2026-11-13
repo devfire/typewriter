@@ -92,7 +92,14 @@ fn mode_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui::Response {
 fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::OverlayText) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Box width").size(13.5));
+        ui.label(
+            egui::RichText::new(match item.kind {
+                // Signatures never wrap, so width only sizes their frame.
+                BoxKind::Signature => "Box width (frame only)",
+                BoxKind::Text => "Box width",
+            })
+            .size(13.5),
+        );
         let mut reset_width = false;
         match &mut item.width_pt {
             Some(width_pt) => {

@@ -44,6 +44,78 @@ fn two_lines_produce_two_tj_and_one_td() {
     assert!((td.operands[1].as_float().unwrap() + 14.4).abs() < 0.001);
 }
 
+/// Literal strings of every `Tj` in `ops`, in order.
+fn tj_strings(ops: &[Operation]) -> Vec<Vec<u8>> {
+    ops.iter()
+        .filter(|op| op.operator == "Tj")
+        .map(|op| op.operands[0].as_str().unwrap().to_vec())
+        .collect()
+}
+
+fn fixed_width_item(text: &str, width_pt: f32) -> OverlayText {
+    OverlayText {
+        kind: BoxKind::Text,
+        page: 0,
+        x_pt: 10.0,
+        y_top_pt: 20.0,
+        text: text.to_string(),
+        size_pt: 12.0,
+        color: [0, 0, 0],
+        width_pt: Some(width_pt),
+    }
+}
+
+#[test]
+fn helvetica_width_uses_standard_metrics() {
+    // W is 944/1000 em, i is 222/1000 em at 12pt.
+    assert!((helvetica::helvetica_width_pt("WW", 12.0) - 22.656).abs() < 0.001);
+    assert!((helvetica::helvetica_width_pt("ii", 12.0) - 5.328).abs() < 0.001);
+}
+
+#[test]
+fn fixed_width_text_wraps_at_word_boundaries() {
+    // Helvetica at 12pt: "aaaa" is 26.688pt (fits 30pt), but
+    // "aaaa bbbb" is 56.7pt, so every word lands on its own line.
+    let item = fixed_width_item("aaaa bbbb cccc", 30.0);
+    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    assert_eq!(
+        tj_strings(&ops),
+        vec![b"aaaa".to_vec(), b"bbbb".to_vec(), b"cccc".to_vec()]
+    );
+    for line in tj_strings(&ops) {
+        let line = String::from_utf8(line).unwrap();
+        assert!(helvetica::helvetica_width_pt(&line, 12.0) <= 30.0, "{line}");
+    }
+}
+
+#[test]
+fn fixed_width_long_word_is_hard_broken() {
+    let item = fixed_width_item("aaaaaaaaaa", 30.0);
+    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    assert_eq!(
+        tj_strings(&ops),
+        vec![b"aaaa".to_vec(), b"aaaa".to_vec(), b"aa".to_vec()]
+    );
+}
+
+#[test]
+fn fixed_width_bake_wraps_text_in_saved_content() {
+    let (mut pdf, out) = fixture_pdf();
+    let page_id = pdf.page_ids[0];
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.items[idx].text = "aaaa bbbb cccc".to_string();
+    overlays.items[idx].width_pt = Some(30.0);
+    pdf.bake_and_save(&mut overlays, &out).unwrap();
+    let content = pdf.doc.get_page_content(page_id).unwrap();
+    let text = String::from_utf8(content).unwrap();
+    assert_eq!(text.split_whitespace().filter(|t| *t == "Tj").count(), 3);
+    for word in ["aaaa", "bbbb", "cccc"] {
+        assert!(text.contains(word), "wrapped word {word} missing: {text}");
+    }
+    let _ = std::fs::remove_file(&out);
+}
+
 /// Operands of the first `Tm` operator in a decoded content stream.
 fn tm_operands(content: &[u8]) -> Vec<f32> {
     let text = String::from_utf8(content.to_vec()).unwrap();

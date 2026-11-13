@@ -389,8 +389,8 @@ impl TypewriterApp {
         for (idx, item) in &boxes {
             let top_left = overlay::pdf_top_to_screen(item.x_pt, item.y_top_pt, page_rect, zoom);
             let font = box_font(item, zoom);
-            let display_lines = box_display_lines(item);
-            let line_count = item.text.lines().count().max(1) as f32;
+            let display_lines = box_display_lines(ui, item, &font, zoom);
+            let line_count = display_lines.len().max(1) as f32;
             let auto_width_pt = measured_width_pt(ui, &display_lines, &font, zoom, item.kind);
             let width_pt = item.width_pt.map_or(auto_width_pt, |w| w.max(24.0));
             let height_pt = line_count * overlay::LEADING * item.size_pt;
@@ -578,18 +578,11 @@ fn measured_width_pt(
         crate::overlay::BoxKind::Signature => 96.0,
         crate::overlay::BoxKind::Text => 48.0,
     };
-    let widest_px = lines
+    let widest_pt = lines
         .iter()
-        .map(|line| {
-            ui.fonts(|fonts| {
-                fonts
-                    .layout_no_wrap(line.clone(), font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
-            })
-        })
+        .map(|line| line_width_pt(ui, line, font, zoom))
         .fold(0.0_f32, f32::max);
-    (widest_px / zoom + 8.0).max(min_pt)
+    (widest_pt + 8.0).max(min_pt)
 }
 
 /// Extra visual box height (above, below) in points, beyond the em
@@ -610,10 +603,37 @@ fn box_font(item: &crate::overlay::OverlayText, zoom: f32) -> egui::FontId {
     }
 }
 
-/// Lines as drawn: signatures are always a single flattened line.
-fn box_display_lines(item: &crate::overlay::OverlayText) -> Vec<String> {
+/// Rendered width of one line in points, via egui's real font metrics.
+fn line_width_pt(ui: &egui::Ui, line: &str, font: &egui::FontId, zoom: f32) -> f32 {
+    ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(line.to_string(), font.clone(), egui::Color32::WHITE)
+            .size()
+            .x
+    }) / zoom
+}
+
+/// Lines as drawn: signatures are always a single flattened line;
+/// fixed-width text boxes wrap at their width, as the baker wraps
+/// them (each side with its own font's metrics).
+fn box_display_lines(
+    ui: &egui::Ui,
+    item: &crate::overlay::OverlayText,
+    font: &egui::FontId,
+    zoom: f32,
+) -> Vec<String> {
     match item.kind {
         crate::overlay::BoxKind::Signature => vec![item.signature_line()],
-        crate::overlay::BoxKind::Text => item.text.lines().map(ToString::to_string).collect(),
+        crate::overlay::BoxKind::Text => {
+            let lines: Vec<String> = item.text.lines().map(ToString::to_string).collect();
+            match item.width_pt {
+                Some(width) => {
+                    crate::overlay::wrap_lines(&lines, width.max(24.0), &|line: &str| {
+                        line_width_pt(ui, line, font, zoom)
+                    })
+                }
+                None => lines,
+            }
+        }
     }
 }

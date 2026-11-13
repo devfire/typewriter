@@ -5,7 +5,7 @@
 //! `add_to_page_content`. Existing Helvetica fonts are reused; a new
 //! standard-14 Helvetica is added only when the page has none.
 
-use crate::overlay::{BoxKind, LEADING, OverlayState, OverlayText, text_matrix};
+use crate::overlay::{BoxKind, LEADING, OverlayState, OverlayText, text_matrix, wrap_lines};
 use anyhow::{Context, Result, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat, dictionary};
@@ -267,6 +267,23 @@ fn box_operations(
             signature_font::encode_hex(face, &item.signature_line()),
             StringFormat::Hexadecimal,
         )],
+        (BoxKind::Text, _) if item.width_pt.is_some() => {
+            // Fixed width: wrap with real Helvetica metrics so the
+            // baked lines fit the box the user sized. The clamp
+            // mirrors the preview's minimum box width.
+            let width = item.width_pt.unwrap_or_default().max(24.0);
+            let mut logical: Vec<String> =
+                item.text.split('\n').map(ToString::to_string).collect();
+            if logical.len() > 1 && logical.last().is_some_and(String::is_empty) {
+                logical.pop();
+            }
+            wrap_lines(&logical, width, &|line: &str| {
+                helvetica::helvetica_width_pt(line, size)
+            })
+            .iter()
+            .map(|line| Object::String(winansi_bytes(line), StringFormat::Literal))
+            .collect()
+        }
         _ => winansi_lines(&item.text)
             .into_iter()
             .map(|line| Object::String(line, StringFormat::Literal))
@@ -534,6 +551,7 @@ fn insert_font_entry(
     Ok(())
 }
 
+mod helvetica;
 mod signature_font;
 
 #[cfg(test)]

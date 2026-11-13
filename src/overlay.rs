@@ -32,6 +32,9 @@ pub struct OverlayText {
     pub color: [u8; 3],
     /// Manual box width in PDF points, set by dragging the resize
     /// handle. `None` = auto-fit to the measured rendered text.
+    /// Text boxes wrap at this width in both the preview and the
+    /// baked PDF; signatures never wrap (see `signature_line`), so
+    /// for them it only sizes the on-screen frame.
     pub width_pt: Option<f32>,
 }
 
@@ -134,6 +137,68 @@ impl OverlayState {
     }
 }
 
+/// Greedily wrap one logical line to at most `max_width_pt`, breaking
+/// at whitespace where possible and hard-breaking a single word that
+/// is wider than the box. `measure` returns a candidate string's
+/// rendered width in points, so each caller wraps with its own font
+/// metrics (egui preview vs. Helvetica baker) while sharing the
+/// breaking rules. Multiple spaces collapse to one, as in HTML.
+/// A non-positive width disables wrapping.
+#[must_use]
+pub fn wrap_line(line: &str, max_width_pt: f32, measure: &impl Fn(&str) -> f32) -> Vec<String> {
+    if max_width_pt <= 0.0 {
+        return vec![line.to_string()];
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if measure(&candidate) <= max_width_pt {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        if measure(word) <= max_width_pt {
+            current = word.to_string();
+            continue;
+        }
+        // Single word wider than the box: hard-break it by character.
+        let mut chunk = String::new();
+        for ch in word.chars() {
+            chunk.push(ch);
+            if measure(&chunk) > max_width_pt && chunk.chars().count() > 1 {
+                chunk.truncate(chunk.len() - ch.len_utf8());
+                out.push(std::mem::take(&mut chunk));
+                chunk.push(ch);
+            }
+        }
+        current = chunk;
+    }
+    if !current.is_empty() || out.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+/// Wrap every line in `lines` with [`wrap_line`], flattening the result.
+#[must_use]
+pub fn wrap_lines(
+    lines: &[String],
+    max_width_pt: f32,
+    measure: &impl Fn(&str) -> f32,
+) -> Vec<String> {
+    lines
+        .iter()
+        .flat_map(|line| wrap_line(line, max_width_pt, measure))
+        .collect()
+}
+
 /// Convert a screen position inside `page_rect` to PDF points measured
 /// from the page's top-left corner.
 #[must_use]
@@ -219,6 +284,27 @@ mod tests {
         let back = pdf_top_to_screen(x, y, r, 1.5);
         assert!((back.x - 160.0).abs() < 0.001);
         assert!((back.y - 320.0).abs() < 0.001);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn wrap_line_breaks_at_words_and_hard_breaks_long_words() {
+        // 10pt per character, so widths are easy to reason about.
+        let measure = |s: &str| s.chars().count() as f32 * 10.0;
+        assert_eq!(
+            wrap_line("aaaa bbbb cccc", 90.0, &measure),
+            vec!["aaaa bbbb", "cccc"]
+        );
+        assert_eq!(
+            wrap_line("aaaaaaaaaa", 45.0, &measure),
+            vec!["aaaa", "aaaa", "aa"]
+        );
+        assert_eq!(wrap_line("", 45.0, &measure), vec![""]);
+        assert_eq!(
+            wrap_line("aaaa bbbb", 0.0, &measure),
+            vec!["aaaa bbbb"],
+            "non-positive width disables wrapping"
+        );
     }
 
     #[test]
