@@ -5,6 +5,7 @@ use crate::pdf::PdfDoc;
 use crate::render::PageRenderer;
 use eframe::egui;
 use std::path::PathBuf;
+mod close_prompt;
 mod panels;
 mod theme;
 mod typewriter_icon;
@@ -14,6 +15,16 @@ const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x2F, 0x6F, 0xED);
 pub const DANGER: egui::Color32 = egui::Color32::from_rgb(0xD9, 0x34, 0x3B);
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 4.0;
+
+/// Window-close lifecycle: `Prompting` while the unsaved-changes
+/// modal is up, `Allowed` once the user saved or discarded so the
+/// re-issued close request passes through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CloseState {
+    Idle,
+    Prompting,
+    Allowed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -36,6 +47,7 @@ pub struct TypewriterApp {
     fit_pending: bool,
     /// Box currently being width-resized via its corner handle, if any.
     resize_box: Option<usize>,
+    close_state: CloseState,
 }
 
 impl TypewriterApp {
@@ -54,6 +66,7 @@ impl TypewriterApp {
             focus_editor: false,
             fit_pending: false,
             resize_box: None,
+            close_state: CloseState::Idle,
         }
     }
 
@@ -101,9 +114,13 @@ impl TypewriterApp {
         }
     }
 
-    fn save(&mut self, save_as: bool) {
+    /// Bake overlays into the PDF. Returns `true` only when the file
+    /// was actually written (dialog not cancelled, overwrite confirmed,
+    /// write succeeded) — the close prompt relies on this to decide
+    /// whether closing may proceed.
+    fn save(&mut self, save_as: bool) -> bool {
         if self.pdf_doc.is_none() {
-            return;
+            return false;
         }
         self.overlays.drop_empty_selected();
         let target = if save_as {
@@ -118,11 +135,11 @@ impl TypewriterApp {
             }
             match dialog.save_file() {
                 Some(path) => path,
-                None => return,
+                None => return false,
             }
         } else {
             let Some(source) = self.pdf_path.clone() else {
-                return;
+                return false;
             };
             let confirmed = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Warning)
@@ -134,28 +151,31 @@ impl TypewriterApp {
                 .set_buttons(rfd::MessageButtons::YesNo)
                 .show();
             if confirmed != rfd::MessageDialogResult::Yes {
-                return;
+                return false;
             }
             source
         };
         let result = match self.pdf_doc.as_mut() {
             Some(doc) => doc.bake_and_save(&mut self.overlays, &target),
-            None => return,
+            None => return false,
         };
         match result {
             Ok(()) => {
                 let message = format!("Saved {}", target.display());
                 self.load(target);
                 self.status = message;
+                true
             }
             Err(err) => {
                 self.status = format!("Save failed: {err:#}");
+                false
             }
         }
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        if ctx.wants_keyboard_input() {
+        // While the close prompt is up it owns the keyboard (Esc dismisses it).
+        if self.close_state == CloseState::Prompting || ctx.wants_keyboard_input() {
             return;
         }
         let (open, save, zoom_in, zoom_out, escape, delete) = ctx.input_mut(|i| {
@@ -195,11 +215,13 @@ impl TypewriterApp {
 
 impl eframe::App for TypewriterApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.guard_close(ctx);
         self.handle_shortcuts(ctx);
         self.toolbar(ctx);
         self.status_bar(ctx);
         self.sidebar(ctx);
         self.canvas(ctx);
+        self.close_prompt(ctx);
     }
 }
 
