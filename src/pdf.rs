@@ -164,18 +164,7 @@ impl PdfDoc {
                 return Ok(String::from_utf8_lossy(name).into_owned());
             }
         }
-        let alias = if fonts.contains_key(b"F_TW".as_slice()) {
-            let mut n = 1_u32;
-            loop {
-                let candidate = format!("F_TW{n}");
-                if !fonts.contains_key(candidate.as_bytes()) {
-                    break candidate;
-                }
-                n += 1;
-            }
-        } else {
-            "F_TW".to_string()
-        };
+        let alias = free_alias(&fonts, "F_TW");
         let font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type1",
@@ -382,8 +371,24 @@ fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
     }
 }
 
-/// Walk the `Parent` chain looking for an inherited array entry.
-fn inherited_array(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f32; 4]> {
+/// Outcome of visiting one node while walking a `Parent` chain.
+enum ParentVisit<T> {
+    /// Value found; stop walking and return it.
+    Found(T),
+    /// No usable value on this node; walk to its parent.
+    Continue,
+    /// Malformed value on this node; abort instead of inheriting.
+    Stop,
+}
+
+/// Walk the `Parent` chain from `page_id`, visiting each node's
+/// dictionary until `visit` finds a value or aborts. Cycles and
+/// non-dictionary nodes end the walk with `None`.
+fn parent_chain_find<T>(
+    doc: &Document,
+    page_id: ObjectId,
+    mut visit: impl FnMut(ObjectId, &Dictionary) -> ParentVisit<T>,
+) -> Option<T> {
     let mut current = Some(page_id);
     let mut seen = HashSet::new();
     while let Some(id) = current {
@@ -391,15 +396,10 @@ fn inherited_array(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f32
             return None;
         }
         let dict = doc.get_dictionary(id).ok()?;
-        if let Ok(obj) = dict.get(key)
-            && let Some(Object::Array(items)) = resolve(doc, obj)
-            && items.len() >= 4
-        {
-            let mut out = [0.0_f32; 4];
-            for (slot, item) in out.iter_mut().zip(items.iter()) {
-                *slot = resolve(doc, item)?.as_float().ok()?;
-            }
-            return Some(out);
+        match visit(id, dict) {
+            ParentVisit::Found(value) => return Some(value),
+            ParentVisit::Continue => {}
+            ParentVisit::Stop => return None,
         }
         current = dict
             .get(b"Parent")
@@ -409,26 +409,39 @@ fn inherited_array(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f32
     None
 }
 
+/// Walk the `Parent` chain looking for an inherited array entry.
+/// A present-but-malformed array aborts the walk rather than
+/// silently inheriting an ancestor's box.
+fn inherited_array(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f32; 4]> {
+    parent_chain_find(doc, page_id, |_id, dict| {
+        let Ok(obj) = dict.get(key) else {
+            return ParentVisit::Continue;
+        };
+        let Some(Object::Array(items)) = resolve(doc, obj) else {
+            return ParentVisit::Continue;
+        };
+        if items.len() < 4 {
+            return ParentVisit::Continue;
+        }
+        let mut out = [0.0_f32; 4];
+        for (slot, item) in out.iter_mut().zip(items.iter()) {
+            let Some(value) = resolve(doc, item).and_then(|obj| obj.as_float().ok()) else {
+                return ParentVisit::Stop;
+            };
+            *slot = value;
+        }
+        ParentVisit::Found(out)
+    })
+}
+
 fn inherited_int(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<i64> {
-    let mut current = Some(page_id);
-    let mut seen = HashSet::new();
-    while let Some(id) = current {
-        if !seen.insert(id) {
-            return None;
-        }
-        let dict = doc.get_dictionary(id).ok()?;
-        if let Ok(obj) = dict.get(key)
-            && let Some(value) = resolve(doc, obj)
-            && let Ok(v) = value.as_i64()
-        {
-            return Some(v);
-        }
-        current = dict
-            .get(b"Parent")
+    parent_chain_find(doc, page_id, |_id, dict| {
+        dict.get(key)
             .ok()
-            .and_then(|obj| obj.as_reference().ok());
-    }
-    None
+            .and_then(|obj| resolve(doc, obj))
+            .and_then(|value| value.as_i64().ok())
+            .map_or(ParentVisit::Continue, ParentVisit::Found)
+    })
 }
 
 /// Effective visible page box: the `CropBox` intersected with the
@@ -458,24 +471,11 @@ enum ResourcesTarget {
 }
 
 fn find_resources_target(doc: &Document, page_id: ObjectId) -> Option<ResourcesTarget> {
-    let mut current = Some(page_id);
-    let mut seen = HashSet::new();
-    while let Some(id) = current {
-        if !seen.insert(id) {
-            return None;
-        }
-        let dict = doc.get_dictionary(id).ok()?;
-        match dict.get(b"Resources") {
-            Ok(Object::Reference(res_id)) => return Some(ResourcesTarget::Reference(*res_id)),
-            Ok(Object::Dictionary(_)) => return Some(ResourcesTarget::Direct(id)),
-            _ => {}
-        }
-        current = dict
-            .get(b"Parent")
-            .ok()
-            .and_then(|obj| obj.as_reference().ok());
-    }
-    None
+    parent_chain_find(doc, page_id, |id, dict| match dict.get(b"Resources") {
+        Ok(Object::Reference(res_id)) => ParentVisit::Found(ResourcesTarget::Reference(*res_id)),
+        Ok(Object::Dictionary(_)) => ParentVisit::Found(ResourcesTarget::Direct(id)),
+        _ => ParentVisit::Continue,
+    })
 }
 
 fn resources_dict_mut(doc: &mut Document, target: ResourcesTarget) -> Result<&mut Dictionary> {
