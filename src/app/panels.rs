@@ -9,7 +9,7 @@ use super::widgets::{
     big_button, box_width_control, group, hint_card, icon_button, mode_button, pill, primary_button,
 };
 use super::{ACCENT, BTN_H, DANGER, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, SaveMode, TypewriterApp};
-use crate::overlay::BoxKind;
+use crate::overlay::{BoxId, BoxKind, OverlayText};
 use eframe::egui;
 
 impl TypewriterApp {
@@ -215,13 +215,20 @@ impl TypewriterApp {
     }
 
     fn sidebar_content(&mut self, ui: &mut egui::Ui) {
+        // Inspector (incl. signature Size slider) pinned to the bottom:
+        // a long box list must not push it below the window.
+        egui::TopBottomPanel::bottom("sidebar_inspector")
+            .resizable(false)
+            .frame(egui::Frame::new())
+            .show_inside(ui, |ui| {
+                ui.add_space(10.0);
+                self.edit_actions(ui);
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new("Inspector").size(18.0).strong());
+                ui.add_space(8.0);
+                self.inspector(ui);
+            });
         self.box_list(ui);
-        ui.add_space(10.0);
-        self.edit_actions(ui);
-        ui.add_space(10.0);
-        ui.label(egui::RichText::new("Inspector").size(18.0).strong());
-        ui.add_space(8.0);
-        self.inspector(ui);
     }
 
     fn box_list(&mut self, ui: &mut egui::Ui) {
@@ -245,69 +252,91 @@ impl TypewriterApp {
         }
         let mut select: Option<crate::overlay::BoxId> = None;
         let mut remove: Option<crate::overlay::BoxId> = None;
-        for (idx, item) in &page_items {
-            let selected = self.overlays.selected == Some(*idx);
-            let first_line: String = item
-                .text
-                .lines()
-                .next()
-                .unwrap_or("(empty)")
-                .chars()
-                .take(26)
-                .collect();
-            egui::Frame::new()
-                .fill(ui.visuals().faint_bg_color)
-                .stroke(egui::Stroke::new(
-                    if selected { 1.5_f32 } else { 1.0_f32 },
-                    if selected {
-                        ACCENT
-                    } else {
-                        ui.visuals().widgets.noninteractive.bg_stroke.color
-                    },
-                ))
-                .corner_radius(RADIUS)
-                .inner_margin(egui::Margin::symmetric(10, 6))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let marker = match item.kind {
-                            BoxKind::Signature => "✍ ",
-                            BoxKind::Text => "",
-                        };
-                        let label = format!("{marker}{first_line}  ·  {:.0} pt", item.size_pt);
-                        if ui
-                            .add_sized(
-                                egui::vec2((ui.available_width() - 44.0).max(80.0), 34.0),
-                                egui::Button::selectable(
-                                    selected,
-                                    egui::RichText::new(label).size(14.0),
-                                )
-                                .corner_radius(RADIUS),
-                            )
-                            .clicked()
-                        {
-                            select = Some(*idx);
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new("×").size(16.0))
-                                    .min_size(egui::vec2(34.0, 34.0))
-                                    .corner_radius(RADIUS),
-                            )
-                            .on_hover_text("Delete this text box")
-                            .clicked()
-                        {
-                            remove = Some(*idx);
-                        }
-                    });
-                });
-            ui.add_space(6.0);
-        }
+        // Only the entries scroll; header and pinned inspector stay on screen.
+        egui::ScrollArea::vertical()
+            .id_salt("box_list")
+            .max_height(ui.available_height())
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                for (idx, item) in &page_items {
+                    self.box_list_row(ui, *idx, item, &mut select, &mut remove);
+                }
+            });
         if let Some(idx) = select {
             self.overlays.selected = Some(idx);
         }
         if let Some(idx) = remove {
             self.overlays.remove(idx);
         }
+    }
+
+    /// One box-list entry: selectable label plus delete button.
+    /// Clicks are reported via `select`/`remove` so the caller can
+    /// mutate `overlays` after the (borrowing) list pass.
+    fn box_list_row(
+        &self,
+        ui: &mut egui::Ui,
+        idx: BoxId,
+        item: &OverlayText,
+        select: &mut Option<BoxId>,
+        remove: &mut Option<BoxId>,
+    ) {
+        let selected = self.overlays.selected == Some(idx);
+        let first_line: String = item
+            .text
+            .lines()
+            .next()
+            .unwrap_or("(empty)")
+            .chars()
+            .take(26)
+            .collect();
+        egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .stroke(egui::Stroke::new(
+                if selected { 1.5_f32 } else { 1.0_f32 },
+                if selected {
+                    ACCENT
+                } else {
+                    ui.visuals().widgets.noninteractive.bg_stroke.color
+                },
+            ))
+            .corner_radius(RADIUS)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let marker = match item.kind {
+                        BoxKind::Signature => "✍ ",
+                        BoxKind::Text => "",
+                    };
+                    let label = format!("{marker}{first_line}  ·  {:.0} pt", item.size_pt);
+                    if ui
+                        .add_sized(
+                            egui::vec2((ui.available_width() - 44.0).max(80.0), 34.0),
+                            egui::Button::selectable(
+                                selected,
+                                egui::RichText::new(label).size(14.0),
+                            )
+                            .corner_radius(RADIUS),
+                        )
+                        .clicked()
+                    {
+                        *select = Some(idx);
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("×").size(16.0))
+                                .min_size(egui::vec2(34.0, 34.0))
+                                .corner_radius(RADIUS),
+                        )
+                        .on_hover_text("Delete this text box")
+                        .clicked()
+                    {
+                        *remove = Some(idx);
+                    }
+                });
+            });
+        ui.add_space(6.0);
     }
 
     /// Copy / Cut / Paste / Duplicate for the selected box (text or

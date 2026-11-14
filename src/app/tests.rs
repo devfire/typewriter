@@ -136,6 +136,52 @@ fn placed_box_editor_focuses_so_typing_edits_the_box() {
 }
 
 #[test]
+fn inspector_stays_on_screen_with_many_boxes() {
+    use eframe::egui::{Context, Pos2, RawInput, Rect, Shape, Vec2};
+
+    let mut app = test_app();
+    for _ in 0..30 {
+        app.overlays.add(0, 10.0, 20.0, BoxKind::Signature);
+    }
+    // Minimum window height (see `main.rs`): the regression case,
+    // where 30 list entries pushed the Size slider off-screen.
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0));
+    let ctx = Context::default();
+    // Registers the Momo Signature font the inspector preview needs
+    // (`test_app` bypasses `TypewriterApp::new`, which normally does).
+    super::theme::apply_theme(&ctx);
+    // Panels size themselves from the previous frame, so run a few
+    // frames (as the real app does) before measuring the last one.
+    let mut output = None;
+    for _ in 0..4 {
+        output = Some(ctx.run(
+            RawInput {
+                screen_rect: Some(screen),
+                ..RawInput::default()
+            },
+            |ctx| app.sidebar(ctx),
+        ));
+    }
+    let output = output.expect("at least one frame ran");
+    // The slider's "Size" label is painted text; find it among the
+    // emitted shapes and require it inside the screen rect.
+    let size_labels: Vec<Pos2> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            Shape::Text(text) if text.galley.job.text == "Size" => Some(text.pos),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(size_labels.len(), 1, "expected one Size slider label");
+    assert!(
+        screen.contains(size_labels[0]),
+        "Size label at {:?} must be on screen {screen:?}",
+        size_labels[0]
+    );
+}
+
+#[test]
 fn copy_then_paste_lands_on_current_page_and_cut_clears_source() {
     let mut app = test_app();
     // Paste guards on an open document.
