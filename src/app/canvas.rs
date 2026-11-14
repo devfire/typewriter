@@ -40,6 +40,14 @@ fn box_layout_key(item: &crate::overlay::OverlayText, zoom: f32) -> BoxLayoutKey
         zoom_bits: zoom.to_bits(),
     }
 }
+
+/// Quantize a viewport extent to a whole 8-logical-pixel step, so the
+/// centering key (in [`super::CanvasView`]) is stable against a few
+/// pixels of scrollbar churn.
+fn bucket(v: f32) -> f32 {
+    (v / 8.0).round() * 8.0
+}
+
 impl TypewriterApp {
     pub(super) fn canvas(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::central_panel(ctx.style().as_ref())
@@ -120,44 +128,78 @@ impl TypewriterApp {
             }
         };
         let mode = self.mode;
-        egui::ScrollArea::both()
+        let page_size = egui::vec2(dim_w * zoom, dim_h * zoom);
+        // Center the page in the canvas. Re-pin the scroll position only
+        // when the layout changes; otherwise keep the user's pan.
+        let recenter = self.canvas_recenter(ui, page_size);
+        let mut scroll = egui::ScrollArea::both()
+            .auto_shrink([false, false])
             .scroll_source(egui::containers::scroll_area::ScrollSource {
                 drag: mode == Mode::Navigate,
                 ..Default::default()
-            })
-            .show(ui, |ui| {
-                let page_size = egui::vec2(dim_w * zoom, dim_h * zoom);
-                let (page_rect, page_resp) =
-                    ui.allocate_exact_size(page_size, egui::Sense::click_and_drag());
-                let painter = ui.painter_at(page_rect.expand(16.0));
-                // Layered soft shadow so the page floats over the canvas.
-                painter.rect_filled(
-                    page_rect.translate(egui::vec2(0.0, 10.0)).expand(2.0),
-                    8.0,
-                    egui::Color32::from_black_alpha(28),
-                );
-                painter.rect_filled(
-                    page_rect.translate(egui::vec2(0.0, 4.0)),
-                    6.0,
-                    egui::Color32::from_black_alpha(36),
-                );
-                painter.rect_filled(page_rect, 4.0, egui::Color32::WHITE);
-                painter.rect_stroke(
-                    page_rect,
-                    4.0,
-                    egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(36)),
-                    egui::StrokeKind::Outside,
-                );
-                if let Some(texture) = &texture {
-                    painter.image(
-                        texture.id(),
-                        page_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-                self.draw_boxes(ui, page_rect, page, zoom, &page_resp);
             });
+        if let Some(offset) = recenter {
+            scroll = scroll.scroll_offset(offset);
+        }
+        scroll.show(ui, |ui| {
+            // Content is at least the viewport so the page centers when it
+            // fits; larger content lets the page pan when it overflows.
+            let content_size = page_size.max(ui.available_size());
+            let (content_rect, _) = ui.allocate_exact_size(content_size, egui::Sense::hover());
+            let page_min = content_rect.left_top() + (content_size - page_size) * 0.5;
+            let page_rect = egui::Rect::from_min_size(page_min, page_size);
+            let page_resp = ui.allocate_rect(page_rect, egui::Sense::click_and_drag());
+            let painter = ui.painter_at(page_rect.expand(16.0));
+            // Layered soft shadow so the page floats over the canvas.
+            painter.rect_filled(
+                page_rect.translate(egui::vec2(0.0, 10.0)).expand(2.0),
+                8.0,
+                egui::Color32::from_black_alpha(28),
+            );
+            painter.rect_filled(
+                page_rect.translate(egui::vec2(0.0, 4.0)),
+                6.0,
+                egui::Color32::from_black_alpha(36),
+            );
+            painter.rect_filled(page_rect, 4.0, egui::Color32::WHITE);
+            painter.rect_stroke(
+                page_rect,
+                4.0,
+                egui::Stroke::new(1.0_f32, egui::Color32::from_black_alpha(36)),
+                egui::StrokeKind::Outside,
+            );
+            if let Some(texture) = &texture {
+                painter.image(
+                    texture.id(),
+                    page_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+            self.draw_boxes(ui, page_rect, page, zoom, &page_resp);
+        });
+    }
+
+    /// Fresh centered scroll offset for the page, but only the first
+    /// frame a layout (page/zoom/viewport) changed. `None` afterwards
+    /// so the `ScrollArea` keeps the scroll position the user panned to.
+    ///
+    /// The viewport is bucketed to whole 8-logical-pixel steps so a
+    /// few pixels of scrollbar churn can't retrigger centering.
+    fn canvas_recenter(&mut self, ui: &egui::Ui, page_size: egui::Vec2) -> Option<egui::Vec2> {
+        let viewport = ui.available_size();
+        let key = super::CanvasView {
+            page: self.page,
+            zoom_bits: self.zoom.to_bits(),
+            viewport: egui::vec2(bucket(viewport.x), bucket(viewport.y)),
+        };
+        if self.canvas_view == Some(key) {
+            return None;
+        }
+        self.canvas_view = Some(key);
+        // Centers the page in the viewport: 0 when it fits (the page is
+        // already centered in the content), half the overflow otherwise.
+        Some((page_size - viewport).max(egui::Vec2::ZERO) * 0.5)
     }
 
     /// Display lines and measured auto width for box `idx`, served

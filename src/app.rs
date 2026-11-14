@@ -25,6 +25,16 @@ const RADIUS: u8 = 10;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 4.0;
 
+/// Quantized identity of the canvas layout: page, zoom, and viewport.
+/// Tracked so the page is re-centered only when the layout actually
+/// changes (not every frame), leaving user panning alone in between.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CanvasView {
+    page: usize,
+    zoom_bits: u32,
+    viewport: egui::Vec2,
+}
+
 /// Window-close lifecycle: `Prompting` while the unsaved-changes
 /// modal is up, `Allowed` once the user saved or discarded so the
 /// re-issued close request passes through.
@@ -82,6 +92,8 @@ pub struct TypewriterApp {
     /// Per-box display layout cache, keyed by stable `BoxId` and
     /// validated by `BoxLayoutKey`.
     box_layouts: HashMap<BoxId, canvas::CachedBoxLayout>,
+    /// Last layout the canvas was centered for; see [`CanvasView`].
+    canvas_view: Option<CanvasView>,
 }
 
 impl TypewriterApp {
@@ -103,6 +115,7 @@ impl TypewriterApp {
             clipboard: None,
             close_state: CloseState::Idle,
             box_layouts: HashMap::new(),
+            canvas_view: None,
         };
         // A failed CLI-open leaves the reason in the status bar; the
         // GUI still opens so the user can pick another file.
@@ -145,6 +158,7 @@ impl TypewriterApp {
         self.overlays.dirty = false;
         self.overlays.bump_generation();
         self.renderer.invalidate();
+        self.canvas_view = None;
         self.page = 0;
         self.pdf_doc = Some(doc);
         self.hayro_pdf = Some(hayro_pdf);

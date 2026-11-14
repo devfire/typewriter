@@ -21,6 +21,7 @@ fn test_app() -> TypewriterApp {
         clipboard: None,
         close_state: CloseState::Idle,
         box_layouts: std::collections::HashMap::new(),
+        canvas_view: None,
     }
 }
 
