@@ -1,7 +1,8 @@
-use super::{CloseState, Mode, TypewriterApp};
+use super::{CanvasView, CloseState, Mode, TypewriterApp};
 use crate::overlay::{BoxKind, OverlayState};
 use crate::render::PageRenderer;
 use crate::test_util::TempFile;
+use eframe::egui;
 use lopdf::{Document, Object, dictionary};
 
 fn test_app() -> TypewriterApp {
@@ -23,6 +24,34 @@ fn test_app() -> TypewriterApp {
         box_layouts: std::collections::HashMap::new(),
         canvas_view: None,
     }
+}
+
+#[test]
+fn moving_canvas_origin_preserves_page_screen_position() {
+    let mut app = test_app();
+    let previous_origin = egui::pos2(600.0, 150.0);
+    let previous_offset = egui::vec2(120.0, 80.0);
+    app.canvas_view = Some(CanvasView {
+        page: 0,
+        zoom_bits: 1.0_f32.to_bits(),
+        origin: previous_origin,
+        scroll_offset: previous_offset,
+    });
+
+    let new_origin = egui::pos2(400.0, 150.0);
+    let new_offset = app
+        .canvas_scroll_offset(
+            new_origin,
+            egui::vec2(900.0, 700.0),
+            egui::vec2(1200.0, 1000.0),
+        )
+        .unwrap();
+
+    assert_eq!(
+        new_origin - new_offset,
+        previous_origin - previous_offset,
+        "moving the sidebar must not drag the page across the screen"
+    );
 }
 
 /// Write a minimal `pages`-page PDF to a temp file (deleted on drop).

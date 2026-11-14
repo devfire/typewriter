@@ -41,13 +41,6 @@ fn box_layout_key(item: &crate::overlay::OverlayText, zoom: f32) -> BoxLayoutKey
     }
 }
 
-/// Quantize a viewport extent to a whole 8-logical-pixel step, so the
-/// centering key (in [`super::CanvasView`]) is stable against a few
-/// pixels of scrollbar churn.
-fn bucket(v: f32) -> f32 {
-    (v / 8.0).round() * 8.0
-}
-
 impl TypewriterApp {
     pub(super) fn canvas(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::central_panel(ctx.style().as_ref())
@@ -129,19 +122,19 @@ impl TypewriterApp {
         };
         let mode = self.mode;
         let page_size = egui::vec2(dim_w * zoom, dim_h * zoom);
-        // Center the page in the canvas. Re-pin the scroll position only
-        // when the layout changes; otherwise keep the user's pan.
-        let recenter = self.canvas_recenter(ui, page_size);
+        let viewport = ui.available_size();
+        let origin = ui.cursor().min;
+        let scroll_offset = self.canvas_scroll_offset(origin, viewport, page_size);
         let mut scroll = egui::ScrollArea::both()
             .auto_shrink([false, false])
             .scroll_source(egui::containers::scroll_area::ScrollSource {
                 drag: mode == Mode::Navigate,
                 ..Default::default()
             });
-        if let Some(offset) = recenter {
+        if let Some(offset) = scroll_offset {
             scroll = scroll.scroll_offset(offset);
         }
-        scroll.show(ui, |ui| {
+        let output = scroll.show(ui, |ui| {
             // Content is at least the viewport so the page centers when it
             // fits; larger content lets the page pan when it overflows.
             let content_size = page_size.max(ui.available_size());
@@ -178,28 +171,35 @@ impl TypewriterApp {
             }
             self.draw_boxes(ui, page_rect, page, zoom, &page_resp);
         });
-    }
-
-    /// Fresh centered scroll offset for the page, but only the first
-    /// frame a layout (page/zoom/viewport) changed. `None` afterwards
-    /// so the `ScrollArea` keeps the scroll position the user panned to.
-    ///
-    /// The viewport is bucketed to whole 8-logical-pixel steps so a
-    /// few pixels of scrollbar churn can't retrigger centering.
-    fn canvas_recenter(&mut self, ui: &egui::Ui, page_size: egui::Vec2) -> Option<egui::Vec2> {
-        let viewport = ui.available_size();
-        let key = super::CanvasView {
+        self.canvas_view = Some(super::CanvasView {
             page: self.page,
             zoom_bits: self.zoom.to_bits(),
-            viewport: egui::vec2(bucket(viewport.x), bucket(viewport.y)),
-        };
-        if self.canvas_view == Some(key) {
-            return None;
+            origin,
+            scroll_offset: output.state.offset,
+        });
+    }
+
+    /// Center a new page/zoom. When only the canvas origin moves, adjust the
+    /// previous user scroll offset by the same delta so the page stays put.
+    pub(super) fn canvas_scroll_offset(
+        &self,
+        origin: egui::Pos2,
+        viewport: egui::Vec2,
+        page_size: egui::Vec2,
+    ) -> Option<egui::Vec2> {
+        let centered = (page_size - viewport).max(egui::Vec2::ZERO) * 0.5;
+        match self.canvas_view {
+            None => Some(centered),
+            Some(previous)
+                if previous.page != self.page || previous.zoom_bits != self.zoom.to_bits() =>
+            {
+                Some(centered)
+            }
+            Some(previous) if previous.origin != origin => {
+                Some(previous.scroll_offset + (origin - previous.origin))
+            }
+            Some(_) => None,
         }
-        self.canvas_view = Some(key);
-        // Centers the page in the viewport: 0 when it fits (the page is
-        // already centered in the content), half the overflow otherwise.
-        Some((page_size - viewport).max(egui::Vec2::ZERO) * 0.5)
     }
 
     /// Display lines and measured auto width for box `idx`, served

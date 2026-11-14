@@ -25,14 +25,14 @@ const RADIUS: u8 = 10;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 4.0;
 
-/// Quantized identity of the canvas layout: page, zoom, and viewport.
-/// Tracked so the page is re-centered only when the layout actually
-/// changes (not every frame), leaving user panning alone in between.
+/// Last rendered canvas geometry and user-controlled scroll offset.
+/// Preserves the page's screen position when a panel resize moves the canvas.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct CanvasView {
     page: usize,
     zoom_bits: u32,
-    viewport: egui::Vec2,
+    origin: egui::Pos2,
+    scroll_offset: egui::Vec2,
 }
 
 /// Window-close lifecycle: `Prompting` while the unsaved-changes
@@ -92,7 +92,7 @@ pub struct TypewriterApp {
     /// Per-box display layout cache, keyed by stable `BoxId` and
     /// validated by `BoxLayoutKey`.
     box_layouts: HashMap<BoxId, canvas::CachedBoxLayout>,
-    /// Last layout the canvas was centered for; see [`CanvasView`].
+    /// Last rendered canvas geometry; see [`CanvasView`].
     canvas_view: Option<CanvasView>,
 }
 
