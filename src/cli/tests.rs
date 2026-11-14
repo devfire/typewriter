@@ -54,8 +54,5 @@ fn double_dash_allows_dash_prefixed_path() {
 
 #[test]
 fn single_dash_is_a_path() {
-    assert_eq!(
-        parse(args(&["-"])),
-        Ok(Cli::Run(Some(PathBuf::from("-"))))
-    );
+    assert_eq!(parse(args(&["-"])), Ok(Cli::Run(Some(PathBuf::from("-")))));
 }

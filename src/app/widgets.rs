@@ -82,10 +82,11 @@ pub(super) fn mode_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui:
 pub(super) fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::OverlayText) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
+        ui.set_max_width(ui.available_width());
         ui.label(
             egui::RichText::new(match item.kind {
                 // Signatures never wrap, so width only sizes their frame.
-                BoxKind::Signature => "Box width (frame only)",
+                BoxKind::Signature => "Width (frame)",
                 BoxKind::Text => "Box width",
             })
             .size(13.5),
@@ -105,11 +106,14 @@ pub(super) fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::Ov
                 }
             }
             None => {
-                ui.label(egui::RichText::new("Auto (fits text)").size(13.5).weak())
-                    .on_hover_text(
-                        "Drag the blue handle at the box's bottom-right \
-                         corner on the page to set a fixed width",
-                    );
+                ui.add(
+                    egui::Label::new(egui::RichText::new("Auto (fits text)").size(13.5).weak())
+                        .truncate(),
+                )
+                .on_hover_text(
+                    "Drag the blue handle at the box's bottom-right \
+                     corner on the page to set a fixed width",
+                );
             }
         }
         if reset_width {
@@ -120,13 +124,15 @@ pub(super) fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::Ov
     changed
 }
 
-/// Muted rounded hint card with a title and one-line explanation.
+/// Muted rounded hint card with a title and explanation.
 pub(super) fn hint_card(ui: &mut egui::Ui, title: &str, body: &str) {
+    let inner_width = (ui.available_width() - 28.0).max(0.0);
     egui::Frame::new()
         .fill(ui.visuals().faint_bg_color)
         .corner_radius(RADIUS)
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
+            ui.set_width(inner_width);
             ui.label(egui::RichText::new(title).size(14.0).strong());
             ui.add(
                 egui::Label::new(
@@ -134,8 +140,7 @@ pub(super) fn hint_card(ui: &mut egui::Ui, title: &str, body: &str) {
                         .size(13.0)
                         .color(ui.visuals().weak_text_color()),
                 )
-                .truncate(),
-            )
-            .on_hover_text(body);
+                .wrap(),
+            );
         });
 }

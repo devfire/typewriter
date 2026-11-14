@@ -54,39 +54,102 @@ fn moving_canvas_origin_preserves_page_screen_position() {
     );
 }
 
-fn hint_card_height(width: f32) -> f32 {
-    let ctx = egui::Context::default();
-    let input = egui::RawInput {
-        screen_rect: Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(width, 600.0),
-        )),
-        ..Default::default()
-    };
-    let mut height = 0.0;
-    let _ = ctx.run(input, |ctx| {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.set_width(width);
-            let top = ui.cursor().min.y;
-            super::widgets::hint_card(
-                ui,
-                "Nothing selected.",
-                "Click a box — or click the page in Type/Sign mode to add one.",
-            );
-            height = ui.cursor().min.y - top;
-        });
-    });
-    height
-}
-
 #[test]
-fn hint_card_height_is_stable_across_sidebar_widths() {
-    let narrow = hint_card_height(180.0);
-    let wide = hint_card_height(400.0);
-    assert!(
-        (narrow - wide).abs() <= f32::EPSILON,
-        "hint height changed from {wide} to {narrow} when the sidebar narrowed"
+fn sidebar_width_is_not_pushed_out_by_hint_text_when_resized_narrow() {
+    use eframe::egui::{Context, Event, PointerButton, Pos2, RawInput, Rect, Vec2};
+
+    let mut app = test_app();
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(960.0, 640.0));
+    let ctx = Context::default();
+    super::theme::apply_theme(&ctx);
+
+    let run_sidebar = |app: &mut TypewriterApp, events: Vec<Event>| -> f32 {
+        let mut width = 0.0;
+        let _ = ctx.run(
+            RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..RawInput::default()
+            },
+            |ctx| {
+                app.sidebar(ctx);
+                width = ctx.used_rect().width();
+            },
+        );
+        width
+    };
+
+    // Establish initial layout (default 300px inner + 2*14px margin + stroke).
+    let _ = run_sidebar(&mut app, Vec::new());
+    let initial_width = run_sidebar(&mut app, Vec::new());
+
+    // Drag the sidebar's right resize border from initial_width down to 250px (min_width),
+    // release, then move the mouse around without holding any button.
+    let handle = Pos2::new(initial_width, 300.0);
+    let narrow = Pos2::new(250.0, 300.0);
+    let _ = run_sidebar(&mut app, vec![Event::PointerMoved(handle)]);
+    let _ = run_sidebar(
+        &mut app,
+        vec![Event::PointerButton {
+            pos: handle,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
     );
+    let dragged_width = run_sidebar(&mut app, vec![Event::PointerMoved(narrow)]);
+    let _ = run_sidebar(
+        &mut app,
+        vec![Event::PointerButton {
+            pos: narrow,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+
+    assert!(
+        (initial_width - 300.0).abs() <= f32::EPSILON,
+        "sidebar should start at default 300px instead of drifting on layout, got {initial_width}"
+    );
+    assert!(
+        (dragged_width - 250.0).abs() <= f32::EPSILON,
+        "sidebar should narrow to 250px when dragged, got {dragged_width}"
+    );
+
+    // Subsequent frames with mouse movement (both empty state and with selected boxes)
+    // must keep the narrowed width rather than creeping or snapping back out.
+    for i in 0..20 {
+        let width = run_sidebar(
+            &mut app,
+            vec![Event::PointerMoved(Pos2::new(
+                120.0 + f32::from(u8::try_from(i).unwrap()),
+                200.0,
+            ))],
+        );
+        assert!(
+            (width - dragged_width).abs() <= f32::EPSILON,
+            "empty-state sidebar crept from {dragged_width} to {width} on frame {i}"
+        );
+    }
+
+    for kind in [BoxKind::Text, BoxKind::Signature] {
+        let id = app.overlays.add(0, 10.0, 20.0, kind);
+        app.overlays.item_mut(id).unwrap().text = "WWWWWWWWWWWWWWWWWWWWWWWWWW".to_string();
+        for i in 0..10 {
+            let width = run_sidebar(
+                &mut app,
+                vec![Event::PointerMoved(Pos2::new(
+                    140.0 + f32::from(u8::try_from(i).unwrap()),
+                    220.0,
+                ))],
+            );
+            assert!(
+                (width - dragged_width).abs() <= f32::EPSILON,
+                "sidebar with {kind:?} crept from {dragged_width} to {width} on frame {i}"
+            );
+        }
+    }
 }
 
 /// Write a minimal `pages`-page PDF to a temp file (deleted on drop).

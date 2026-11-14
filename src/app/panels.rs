@@ -237,10 +237,13 @@ impl TypewriterApp {
             ui.label(egui::RichText::new("Boxes").size(18.0).strong());
             pill(ui, format!("{}", page_items.len()));
         });
-        ui.label(
-            egui::RichText::new("On this page · click one to edit it below")
-                .size(12.5)
-                .color(ui.visuals().weak_text_color()),
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new("On this page · click one to edit it below")
+                    .size(12.5)
+                    .color(ui.visuals().weak_text_color()),
+            )
+            .wrap(),
         );
         ui.add_space(8.0);
         if page_items.is_empty() {
@@ -253,12 +256,14 @@ impl TypewriterApp {
         let mut select: Option<crate::overlay::BoxId> = None;
         let mut remove: Option<crate::overlay::BoxId> = None;
         // Only the entries scroll; header and pinned inspector stay on screen.
+        let list_width = ui.available_width();
         egui::ScrollArea::vertical()
             .id_salt("box_list")
+            .max_width(list_width)
             .max_height(ui.available_height())
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_width(ui.available_width());
+                ui.set_max_width(ui.available_width());
                 for (idx, item) in &page_items {
                     self.box_list_row(ui, *idx, item, &mut select, &mut remove);
                 }
@@ -291,6 +296,7 @@ impl TypewriterApp {
             .chars()
             .take(26)
             .collect();
+        let row_inner_width = (ui.available_width() - 24.0).max(0.0);
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
             .stroke(egui::Stroke::new(
@@ -304,31 +310,38 @@ impl TypewriterApp {
             .corner_radius(RADIUS)
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
+                ui.set_width(row_inner_width);
                 ui.horizontal(|ui| {
                     let marker = match item.kind {
                         BoxKind::Signature => "✍ ",
                         BoxKind::Text => "",
                     };
                     let label = format!("{marker}{first_line}  ·  {:.0} pt", item.size_pt);
-                    if ui
-                        .add_sized(
-                            egui::vec2((ui.available_width() - 44.0).max(80.0), 34.0),
-                            egui::Button::selectable(
+                    let spacing = ui.spacing().item_spacing.x;
+                    let btn_w = (ui.available_width() - 34.0 - spacing).max(0.0);
+                    let select_resp = ui.allocate_ui_with_layout(
+                        egui::vec2(btn_w, 34.0),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            ui.set_max_width(btn_w);
+                            let btn = egui::Button::selectable(
                                 selected,
                                 egui::RichText::new(label).size(14.0),
                             )
-                            .corner_radius(RADIUS),
-                        )
-                        .clicked()
-                    {
+                            .min_size(egui::vec2(btn_w, 34.0))
+                            .truncate()
+                            .corner_radius(RADIUS);
+                            ui.add(btn)
+                        },
+                    );
+                    if select_resp.inner.clicked() {
                         *select = Some(idx);
                     }
+                    let del_btn = egui::Button::new(egui::RichText::new("×").size(16.0))
+                        .min_size(egui::vec2(34.0, 34.0))
+                        .corner_radius(RADIUS);
                     if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("×").size(16.0))
-                                .min_size(egui::vec2(34.0, 34.0))
-                                .corner_radius(RADIUS),
-                        )
+                        .add(del_btn)
                         .on_hover_text("Delete this text box")
                         .clicked()
                     {
@@ -345,7 +358,8 @@ impl TypewriterApp {
     fn edit_actions(&mut self, ui: &mut egui::Ui) {
         let has_selection = self.overlays.selected.is_some();
         let can_paste = self.clipboard.is_some() && self.page_count() > 0;
-        let half = (ui.available_width() - 6.0) / 2.0;
+        let spacing = ui.spacing().item_spacing.x;
+        let half = (ui.available_width() - spacing).max(0.0) / 2.0;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -410,12 +424,14 @@ impl TypewriterApp {
             return;
         };
         let mut changed = false;
+        let inner_width = (ui.available_width() - 26.0).max(0.0);
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
             .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
             .corner_radius(RADIUS)
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
+                ui.set_width(inner_width);
                 let is_signature = item.kind == BoxKind::Signature;
                 ui.label(
                     egui::RichText::new(if is_signature { "Signature" } else { "Text" })
@@ -423,19 +439,22 @@ impl TypewriterApp {
                         .strong(),
                 );
                 ui.add_space(4.0);
-                let editor = if is_signature {
-                    egui::TextEdit::singleline(&mut item.text).hint_text("Type your name…")
+                let (editor, edit_h) = if is_signature {
+                    (
+                        egui::TextEdit::singleline(&mut item.text).hint_text("Type your name…"),
+                        44.0,
+                    )
                 } else {
-                    egui::TextEdit::multiline(&mut item.text)
-                        .hint_text("Type here… (? replaces non-WinAnsi glyphs)")
-                        .desired_rows(5)
+                    (
+                        egui::TextEdit::multiline(&mut item.text)
+                            .hint_text("Type here… (? replaces non-WinAnsi glyphs)")
+                            .desired_rows(5),
+                        110.0,
+                    )
                 };
                 let edit = ui.add_sized(
-                    egui::vec2(
-                        ui.available_width(),
-                        if is_signature { 44.0 } else { 110.0 },
-                    ),
-                    editor,
+                    egui::vec2(ui.available_width(), edit_h),
+                    editor.desired_width(f32::INFINITY),
                 );
                 if focus_editor {
                     edit.request_focus();
@@ -457,6 +476,7 @@ impl TypewriterApp {
                 } else {
                     8.0..=36.0
                 };
+                ui.spacing_mut().slider_width = (ui.available_width() - 115.0).max(40.0);
                 let size_resp = ui.add(
                     egui::Slider::new(&mut item.size_pt, size_range)
                         .suffix(" pt")
@@ -477,21 +497,16 @@ impl TypewriterApp {
             self.overlays.dirty = true;
         }
         ui.add_space(12.0);
-        if ui
-            .add_sized(
-                egui::vec2(ui.available_width(), BTN_H),
-                egui::Button::new(
-                    egui::RichText::new("Delete box")
-                        .size(15.0)
-                        .strong()
-                        .color(egui::Color32::WHITE),
-                )
-                .fill(DANGER)
-                .stroke(egui::Stroke::NONE)
-                .corner_radius(RADIUS),
-            )
-            .clicked()
-        {
+        let delete_label = egui::RichText::new("Delete box")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::WHITE);
+        let delete_btn = egui::Button::new(delete_label)
+            .min_size(egui::vec2(ui.available_width(), BTN_H))
+            .fill(DANGER)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(RADIUS);
+        if ui.add(delete_btn).clicked() {
             self.overlays.remove(sel);
         }
     }
