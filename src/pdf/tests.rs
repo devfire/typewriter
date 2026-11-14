@@ -209,6 +209,75 @@ fn cropped_pages_bake_text_at_previewed_position() {
     assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
 }
 
+#[test]
+fn bake_inverts_a_dirty_residual_ctm() {
+    // A page whose content leaves a bare `cm` in effect (as some
+    // generators emit): the overlay stream must prepend its inverse,
+    // or the next save's text is drawn through it and renders
+    // upside down.
+    let mut doc = Document::new();
+    let page_tree_id = doc.new_object_id();
+    let page_id = doc.add_object(dictionary! {
+        "Type" => "Page",
+        "Parent" => Object::Reference(page_tree_id),
+        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+    });
+    doc.set_object(
+        page_tree_id,
+        dictionary! {
+            "Type" => "Pages",
+            "Kids" => vec![Object::Reference(page_id)],
+            "Count" => 1,
+        },
+    );
+    let catalog_id = doc.add_object(dictionary! {
+        "Type" => "Catalog",
+        "Pages" => Object::Reference(page_tree_id),
+    });
+    doc.trailer.set("Root", Object::Reference(catalog_id));
+    let dirty = [0.75, 0.0, 0.0, -0.75, 0.0, 841.92];
+    doc.add_to_page_content(
+        page_id,
+        Content {
+            operations: vec![Operation::new(
+                "cm",
+                dirty.into_iter().map(Object::Real).collect(),
+            )],
+        },
+    )
+    .unwrap();
+    let input = TempFile::new("dirty-ctm");
+    let out = TempFile::new("dirty-ctm-out");
+    doc.save(input.path()).unwrap();
+    let mut pdf = PdfDoc::open(input.path()).unwrap();
+    let page_id = pdf.page_ids[0];
+    for (actual, want) in residual_ctm(&pdf.doc, page_id).iter().zip(dirty) {
+        assert!((actual - want).abs() < 0.001);
+    }
+
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+
+    // The appended stream starts with the inverse of the dirty CTM.
+    let content_ids = pdf.doc.get_page_contents(page_id);
+    let appended = content_ids.last().unwrap();
+    let stream = pdf
+        .doc
+        .get_object(*appended)
+        .and_then(Object::as_stream)
+        .unwrap();
+    let ops = Content::decode(&stream.content).unwrap();
+    assert_eq!(ops.operations[0].operator.as_str(), "cm");
+    let inv = invert_ctm(dirty).unwrap();
+    for (actual, want) in ops.operations[0].operands.iter().zip(inv) {
+        assert!((actual.as_float().unwrap() - want).abs() < 0.001);
+    }
+    // And the text is still recoverable.
+    assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
+}
+
 /// Build a minimal one-page `PdfDoc` in memory.
 pub(super) fn fixture_pdf() -> (PdfDoc, TempFile) {
     fixture_pdf_rotated(0)

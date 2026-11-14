@@ -120,6 +120,18 @@ impl PdfDoc {
             let page_box = self.boxes_pt[page];
             let rotate = self.rotations[page];
             let mut operations = Vec::new();
+            // The page's own content may leave a non-identity CTM in
+            // effect (streams are concatenated, so appended text would
+            // be drawn through it). Prepend its inverse so overlay
+            // text is positioned in the same user space the box
+            // coordinates assume. A previous bake already restores the
+            // identity, so a second save adds a no-op `cm` at most.
+            if let Some(inv) = invert_ctm(residual_ctm(&staged, page_id)) {
+                operations.push(Operation::new(
+                    "cm",
+                    inv.into_iter().map(Object::Real).collect(),
+                ));
+            }
             let text_boxes: Vec<&OverlayText> = boxes
                 .iter()
                 .copied()
@@ -309,6 +321,100 @@ fn box_operations(
     ops.push(Operation::new("ET", vec![]));
     ops.push(Operation::new("Q", vec![]));
     ops
+}
+
+/// Net CTM left in effect by a page's existing content streams.
+///
+/// Content streams are concatenated, so a page whose own content
+/// leaves a non-identity transform (a bare `cm` mapping authored
+/// coordinates into user space, as some generators emit) would also
+/// apply that transform to appended overlay text. This walks the
+/// existing streams' `cm`/`q`/`Q` operators to recover that residual
+/// CTM; `Do` form invocations and text operators cannot change the
+/// outer CTM, so they are ignored. Reading is side-effect free: the
+/// original bytes are never rewritten. Unparseable content means the
+/// page is beyond recovery and degrades to no compensation.
+#[allow(clippy::many_single_char_names)] // `[a b c d e f]` is the PDF operator's own naming.
+fn residual_ctm(doc: &Document, page_id: ObjectId) -> [f32; 6] {
+    let identity = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let Ok(bytes) = doc.get_page_content(page_id) else {
+        return identity;
+    };
+    let Ok(content) = Content::decode(&bytes) else {
+        return identity;
+    };
+    let mut ctm = identity;
+    let mut stack: Vec<[f32; 6]> = Vec::new();
+    for op in &content.operations {
+        match op.operator.as_str() {
+            "q" => stack.push(ctm),
+            "Q" => {
+                if let Some(saved) = stack.pop() {
+                    ctm = saved;
+                }
+            }
+            "cm" => {
+                // Concatenate: the new CTM applies `cm` first.
+                let [a, b, c, d, e, f] = ctm;
+                let m = cm_operands(&op.operands);
+                ctm = [
+                    a * m[0] + c * m[1],
+                    b * m[0] + d * m[1],
+                    a * m[2] + c * m[3],
+                    b * m[2] + d * m[3],
+                    a * m[4] + c * m[5] + e,
+                    b * m[4] + d * m[5] + f,
+                ];
+            }
+            _ => {}
+        }
+    }
+    ctm
+}
+
+/// Six matrix operands of a `cm`, or identity when malformed.
+fn cm_operands(operands: &[Object]) -> [f32; 6] {
+    let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    for (slot, operand) in m.iter_mut().zip(operands.iter()) {
+        let Ok(value) = operand.as_float() else {
+            return [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        };
+        *slot = value;
+    }
+    if operands.len() >= 6 {
+        m
+    } else {
+        [1.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+    }
+}
+
+/// Inverse of a CTM `[a b c d e f]`, or `None` when the CTM is already
+/// (effectively) the identity — so the bake emits no no-op — or
+/// singular, where no inverse exists and the content is pathological.
+#[allow(clippy::many_single_char_names)] // `[a b c d e f]` is the PDF operator's own naming.
+fn invert_ctm(m: [f32; 6]) -> Option<[f32; 6]> {
+    let [a, b, c, d, e, f] = m;
+    let identity = (a - 1.0).abs() < 1e-5
+        && b.abs() < 1e-5
+        && c.abs() < 1e-5
+        && (d - 1.0).abs() < 1e-5
+        && e.abs() < 1e-5
+        && f.abs() < 1e-5;
+    if identity {
+        return None;
+    }
+    let det = a * d - b * c;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    Some([
+        d / det,
+        -b / det,
+        -c / det,
+        a / det,
+        (c * f - d * e) / det,
+        (b * e - a * f) / det,
+    ])
 }
 
 #[cfg(test)]
