@@ -71,9 +71,9 @@ pub struct TypewriterApp {
 }
 
 impl TypewriterApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, initial_pdf: Option<PathBuf>) -> Self {
         theme::apply_theme(&cc.egui_ctx);
-        Self {
+        let mut app = Self {
             pdf_path: None,
             pdf_doc: None,
             hayro_pdf: None,
@@ -88,7 +88,13 @@ impl TypewriterApp {
             resize_box: None,
             close_state: CloseState::Idle,
             box_layouts: HashMap::new(),
+        };
+        // A failed CLI-open leaves the reason in the status bar; the
+        // GUI still opens so the user can pick another file.
+        if let Some(path) = initial_pdf {
+            app.load(path);
         }
+        app
     }
 
     fn page_count(&self) -> usize {
