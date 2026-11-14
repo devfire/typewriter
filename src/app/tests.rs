@@ -18,6 +18,7 @@ fn test_app() -> TypewriterApp {
         focus_editor: false,
         fit_pending: false,
         resize_box: None,
+        clipboard: None,
         close_state: CloseState::Idle,
         box_layouts: std::collections::HashMap::new(),
     }
@@ -132,4 +133,37 @@ fn placed_box_editor_focuses_so_typing_edits_the_box() {
     // Typing without clicking the sidebar must land in the new box.
     run(&mut app, vec![Event::Text("hi".to_owned())]);
     assert_eq!(app.overlays.items[0].text, "hi");
+}
+
+#[test]
+fn copy_then_paste_lands_on_current_page_and_cut_clears_source() {
+    let mut app = test_app();
+    // Paste guards on an open document.
+    app.pdf_doc = None;
+    let id = app.overlays.add(0, 50.0, 60.0, BoxKind::Signature);
+    app.overlays.item_mut(id).unwrap().text = "Ada".to_string();
+    app.copy_selected();
+    assert!(app.clipboard.is_some());
+    app.paste_clipboard();
+    assert_eq!(app.overlays.items.len(), 1, "no document: paste is a no-op");
+
+    let path = write_pdf(3);
+    assert!(app.load(path.path().to_path_buf()));
+    // Clipboard survives load by design (cross-document paste).
+    app.page = 2;
+    app.paste_clipboard();
+    assert_eq!(app.overlays.items.len(), 1);
+    let pasted = app.overlays.selected.unwrap();
+    let item = app.overlays.item(pasted).unwrap();
+    assert_eq!(item.kind, BoxKind::Signature);
+    assert_eq!(item.page, 2);
+    assert_eq!(item.text, "Ada");
+
+    app.cut_selected();
+    assert!(app.overlays.items.is_empty());
+    assert_eq!(app.overlays.selected, None);
+    app.page = 1;
+    app.paste_clipboard();
+    assert_eq!(app.overlays.items.len(), 1);
+    assert_eq!(app.overlays.items[0].page, 1);
 }

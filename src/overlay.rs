@@ -11,6 +11,11 @@ pub const ASCENT: f32 = 0.8;
 /// Line spacing as a multiple of the font size.
 pub const LEADING: f32 = 1.2;
 
+/// Offset applied to a pasted/duplicated box, in PDF points, so it
+/// does not land exactly on top of its source. Repeated pastes
+/// cascade by this amount (see [`OverlayState::paste`]).
+pub const PASTE_OFFSET_PT: f32 = 12.0;
+
 /// What a box contains: ordinary typed text, or a typed signature
 /// rendered (preview and baked PDF) in the Momo Signature script font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +127,54 @@ impl OverlayState {
             self.selected = None;
         }
         self.dirty = true;
+    }
+
+    /// Snapshot of the selected box (text or signature, with its
+    /// size, color, and width) for the clipboard. The snapshot's
+    /// `id` is stale by construction: [`Self::paste`] always
+    /// assigns a fresh one, never reusing the source's.
+    #[must_use]
+    pub fn copy_selected(&self) -> Option<OverlayText> {
+        self.selected.and_then(|id| self.item(id)).cloned()
+    }
+
+    /// Like [`Self::copy_selected`], but also removes the selected box.
+    pub fn cut_selected(&mut self) -> Option<OverlayText> {
+        let copied = self.copy_selected()?;
+        if let Some(sel) = self.selected {
+            self.remove(sel);
+        }
+        Some(copied)
+    }
+
+    /// Insert a copy of `source` on `page` (which may differ from
+    /// `source.page`, for copy-on-one-page / paste-on-another),
+    /// offset by [`PASTE_OFFSET_PT`] from `source`'s position,
+    /// and select it. `source` is advanced to the pasted position,
+    /// so pasting repeatedly from the same clipboard snapshot
+    /// cascades instead of stacking copies in one spot. Returns
+    /// the new box's fresh id.
+    pub fn paste(&mut self, source: &mut OverlayText, page: usize) -> BoxId {
+        source.x_pt = (source.x_pt + PASTE_OFFSET_PT).max(0.0);
+        source.y_top_pt = (source.y_top_pt + PASTE_OFFSET_PT).max(0.0);
+        source.page = page;
+        let id = BoxId(self.next_id);
+        self.next_id = self.next_id.wrapping_add(1);
+        let mut item = source.clone();
+        item.id = id;
+        self.items.push(item);
+        self.selected = Some(id);
+        self.dirty = true;
+        id
+    }
+
+    /// Duplicate the selected box in place (same page, offset by
+    /// [`PASTE_OFFSET_PT`]), without touching the clipboard.
+    /// Returns the new box's id, or `None` when nothing is selected.
+    pub fn duplicate_selected(&mut self) -> Option<BoxId> {
+        let mut source = self.copy_selected()?;
+        let page = source.page;
+        Some(self.paste(&mut source, page))
     }
 
     /// Boxes on `page`, paired with their stable ids.
@@ -343,6 +396,70 @@ mod tests {
         state.remove(id);
         assert_eq!(state.selected, None);
         assert!(state.items.is_empty());
+    }
+
+    #[test]
+    fn paste_assigns_fresh_id_selects_and_offsets() {
+        let mut state = OverlayState::default();
+        let src = state.add(0, 100.0, 200.0, BoxKind::Signature);
+        {
+            let item = state.item_mut(src).unwrap();
+            item.text = "Ada".to_string();
+            item.size_pt = 40.0;
+            item.color = [1, 2, 3];
+            item.width_pt = Some(150.0);
+        }
+        let mut clipboard = state.copy_selected().unwrap();
+        let pasted = state.paste(&mut clipboard, 2);
+        assert_ne!(pasted, src);
+        assert_eq!(state.selected, Some(pasted));
+        assert!(state.dirty);
+        let item = state.item(pasted).unwrap();
+        assert_eq!(item.kind, BoxKind::Signature);
+        assert_eq!(item.page, 2);
+        assert_eq!(item.text, "Ada");
+        assert!((item.size_pt - 40.0).abs() < f32::EPSILON);
+        assert_eq!(item.color, [1, 2, 3]);
+        assert_eq!(item.width_pt, Some(150.0));
+        assert!((item.x_pt - 112.0).abs() < f32::EPSILON);
+        assert!((item.y_top_pt - 212.0).abs() < f32::EPSILON);
+        // Source box untouched.
+        let orig = state.item(src).unwrap();
+        assert_eq!(orig.page, 0);
+        assert!((orig.x_pt - 100.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn repeated_paste_cascades_instead_of_stacking() {
+        let mut state = OverlayState::default();
+        state.add(0, 100.0, 200.0, BoxKind::Text);
+        let mut clipboard = state.copy_selected().unwrap();
+        let first = state.paste(&mut clipboard, 0);
+        let second = state.paste(&mut clipboard, 0);
+        let a = state.item(first).unwrap();
+        let (ax, ay) = (a.x_pt, a.y_top_pt);
+        let b = state.item(second).unwrap();
+        assert!((b.x_pt - (ax + PASTE_OFFSET_PT)).abs() < f32::EPSILON);
+        assert!((b.y_top_pt - (ay + PASTE_OFFSET_PT)).abs() < f32::EPSILON);
+        assert_eq!(state.items.len(), 3);
+    }
+
+    #[test]
+    fn cut_removes_and_copy_without_selection_is_none() {
+        let mut state = OverlayState::default();
+        assert!(state.copy_selected().is_none());
+        assert!(state.duplicate_selected().is_none());
+        let id = state.add(1, 10.0, 20.0, BoxKind::Text);
+        state.item_mut(id).unwrap().text = "hello".to_string();
+        let dup = state.duplicate_selected().unwrap();
+        assert_eq!(state.items.len(), 2);
+        assert_eq!(state.item(dup).unwrap().page, 1);
+        state.selected = Some(id);
+        let cut = state.cut_selected().unwrap();
+        assert_eq!(cut.text, "hello");
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.selected, None);
+        assert!(state.item(id).is_none());
     }
 
     #[test]

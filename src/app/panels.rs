@@ -217,6 +217,8 @@ impl TypewriterApp {
     fn sidebar_content(&mut self, ui: &mut egui::Ui) {
         self.box_list(ui);
         ui.add_space(10.0);
+        self.edit_actions(ui);
+        ui.add_space(10.0);
         ui.label(egui::RichText::new("Inspector").size(18.0).strong());
         ui.add_space(8.0);
         self.inspector(ui);
@@ -306,6 +308,60 @@ impl TypewriterApp {
         if let Some(idx) = remove {
             self.overlays.remove(idx);
         }
+    }
+
+    /// Copy / Cut / Paste / Duplicate for the selected box (text or
+    /// signature). Always visible — unlike the inspector — so Paste
+    /// stays reachable after Cut has cleared the selection.
+    fn edit_actions(&mut self, ui: &mut egui::Ui) {
+        let has_selection = self.overlays.selected.is_some();
+        let can_paste = self.clipboard.is_some() && self.page_count() > 0;
+        let half = (ui.available_width() - 6.0) / 2.0;
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    has_selection,
+                    big_button("Copy").min_size(egui::vec2(half, BTN_H)),
+                )
+                .on_hover_text("Copy selected box  (Ctrl+C)")
+                .clicked()
+            {
+                self.copy_selected();
+            }
+            if ui
+                .add_enabled(
+                    has_selection,
+                    big_button("Cut").min_size(egui::vec2(half, BTN_H)),
+                )
+                .on_hover_text("Cut selected box  (Ctrl+X)")
+                .clicked()
+            {
+                self.cut_selected();
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    can_paste,
+                    big_button("Paste").min_size(egui::vec2(half, BTN_H)),
+                )
+                .on_hover_text("Paste box onto this page  (Ctrl+V)")
+                .clicked()
+            {
+                self.paste_clipboard();
+            }
+            if ui
+                .add_enabled(
+                    has_selection,
+                    big_button("Duplicate").min_size(egui::vec2(half, BTN_H)),
+                )
+                .on_hover_text("Duplicate selected box  (Ctrl+D)")
+                .clicked()
+            {
+                self.duplicate_selected();
+            }
+        });
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {

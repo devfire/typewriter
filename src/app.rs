@@ -1,6 +1,6 @@
 //! egui application shell: toolbar, sidebar inspector, page canvas.
 
-use crate::overlay::{BoxId, OverlayState};
+use crate::overlay::{BoxId, BoxKind, OverlayState, OverlayText};
 use crate::pdf::PdfDoc;
 use crate::render::PageRenderer;
 use eframe::egui;
@@ -50,6 +50,14 @@ enum Mode {
     Sign,
 }
 
+/// Human name for a box kind, for status messages.
+fn box_label(kind: BoxKind) -> &'static str {
+    match kind {
+        BoxKind::Text => "text box",
+        BoxKind::Signature => "signature",
+    }
+}
+
 pub struct TypewriterApp {
     pdf_path: Option<PathBuf>,
     pdf_doc: Option<PdfDoc>,
@@ -64,6 +72,12 @@ pub struct TypewriterApp {
     fit_pending: bool,
     /// Box currently being width-resized via its corner handle, if any.
     resize_box: Option<BoxId>,
+    /// Internal clipboard: snapshot of the last copied/cut box
+    /// (text or signature). Not the OS clipboard — a box carries
+    /// kind/size/color/width, not just text. Survives `load`, so a
+    /// box can be copied from one document and pasted into another;
+    /// paste always lands on the current page.
+    clipboard: Option<OverlayText>,
     close_state: CloseState,
     /// Per-box display layout cache, keyed by stable `BoxId` and
     /// validated by `BoxLayoutKey`.
@@ -86,6 +100,7 @@ impl TypewriterApp {
             focus_editor: false,
             fit_pending: false,
             resize_box: None,
+            clipboard: None,
             close_state: CloseState::Idle,
             box_layouts: HashMap::new(),
         };
@@ -224,28 +239,94 @@ impl TypewriterApp {
         }
     }
 
+    /// Copy the selected box into the internal clipboard.
+    pub(super) fn copy_selected(&mut self) {
+        if let Some(item) = self.overlays.copy_selected() {
+            self.set_clipboard(item, "Copied");
+        }
+    }
+
+    /// Cut the selected box into the internal clipboard.
+    pub(super) fn cut_selected(&mut self) {
+        if let Some(item) = self.overlays.cut_selected() {
+            self.set_clipboard(item, "Cut");
+        }
+    }
+
+    fn set_clipboard(&mut self, item: OverlayText, verb: &str) {
+        let label = box_label(item.kind);
+        self.clipboard = Some(item);
+        self.status = format!("{verb} {label}");
+    }
+
+    /// Paste the clipboard box onto the current page, selecting it.
+    /// No-op without a document or an empty clipboard. Repeated
+    /// pastes cascade (see `OverlayState::paste`).
+    pub(super) fn paste_clipboard(&mut self) {
+        if self.pdf_doc.is_none() {
+            return;
+        }
+        let page = self.page;
+        let Some(source) = &mut self.clipboard else {
+            return;
+        };
+        let id = self.overlays.paste(source, page);
+        if let Some(item) = self.overlays.item(id) {
+            self.status = format!("Pasted {}", box_label(item.kind));
+        }
+    }
+
+    /// Duplicate the selected box in place, leaving the clipboard alone.
+    pub(super) fn duplicate_selected(&mut self) {
+        if let Some(id) = self.overlays.duplicate_selected()
+            && let Some(item) = self.overlays.item(id)
+        {
+            self.status = format!("Duplicated {}", box_label(item.kind));
+        }
+    }
+
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // While the close prompt is up it owns the keyboard (Esc dismisses it).
         if self.close_state == CloseState::Prompting || ctx.wants_keyboard_input() {
             return;
         }
-        let (open, save, zoom_in, zoom_out, escape, delete) = ctx.input_mut(|i| {
-            let ctrl = i.modifiers.ctrl || i.modifiers.command;
-            (
-                ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::O),
-                ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::S),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
-                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
-            )
-        });
+        let (open, save, copy, cut, paste, duplicate, zoom_in, zoom_out, escape, delete) = ctx
+            .input_mut(|i| {
+                let ctrl = i.modifiers.ctrl || i.modifiers.command;
+                (
+                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::O),
+                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::S),
+                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::C),
+                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::X),
+                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::V),
+                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
+                )
+            });
         if open {
             self.open_dialog();
         }
         if save && self.overlays.dirty {
             self.save(SaveMode::InPlace);
+        }
+        // Box clipboard. While a text editor has keyboard focus
+        // `handle_shortcuts` returns early above, so Ctrl+C/X/V
+        // there keep their native text-editing meaning.
+        if copy {
+            self.copy_selected();
+        }
+        if cut {
+            self.cut_selected();
+        }
+        if paste {
+            self.paste_clipboard();
+        }
+        if duplicate {
+            self.duplicate_selected();
         }
         if zoom_in {
             self.zoom = (self.zoom * 1.25).clamp(MIN_ZOOM, MAX_ZOOM);
