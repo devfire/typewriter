@@ -128,10 +128,14 @@ pub(super) fn hint_card(ui: &mut egui::Ui, title: &str, body: &str) {
         .inner_margin(egui::Margin::same(14))
         .show(ui, |ui| {
             ui.label(egui::RichText::new(title).size(14.0).strong());
-            ui.label(
-                egui::RichText::new(body)
-                    .size(13.0)
-                    .color(ui.visuals().weak_text_color()),
-            );
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(body)
+                        .size(13.0)
+                        .color(ui.visuals().weak_text_color()),
+                )
+                .truncate(),
+            )
+            .on_hover_text(body);
         });
 }

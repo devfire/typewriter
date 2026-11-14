@@ -54,6 +54,41 @@ fn moving_canvas_origin_preserves_page_screen_position() {
     );
 }
 
+fn hint_card_height(width: f32) -> f32 {
+    let ctx = egui::Context::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(width, 600.0),
+        )),
+        ..Default::default()
+    };
+    let mut height = 0.0;
+    let _ = ctx.run(input, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.set_width(width);
+            let top = ui.cursor().min.y;
+            super::widgets::hint_card(
+                ui,
+                "Nothing selected.",
+                "Click a box — or click the page in Type/Sign mode to add one.",
+            );
+            height = ui.cursor().min.y - top;
+        });
+    });
+    height
+}
+
+#[test]
+fn hint_card_height_is_stable_across_sidebar_widths() {
+    let narrow = hint_card_height(180.0);
+    let wide = hint_card_height(400.0);
+    assert!(
+        (narrow - wide).abs() <= f32::EPSILON,
+        "hint height changed from {wide} to {narrow} when the sidebar narrowed"
+    );
+}
+
 /// Write a minimal `pages`-page PDF to a temp file (deleted on drop).
 fn write_pdf(pages: usize) -> TempFile {
     let mut doc = Document::new();
