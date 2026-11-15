@@ -217,26 +217,81 @@ impl OverlayState {
     }
 }
 
+/// Tab stop width in spaces, shared by the preview and PDF baker.
+pub const TAB_SPACES: &str = "    ";
+
+/// Split `text` into logical lines (`\r\n` or `\n`, dropping a single
+/// trailing empty line from a final newline) with `\t` expanded to
+/// [`TAB_SPACES`]. Shared by the egui preview and the PDF baker so
+/// auto-width and fixed-width boxes see the same lines and tab widths.
+#[must_use]
+pub fn logical_lines(text: &str) -> Vec<String> {
+    let mut lines: Vec<String> = text
+        .split('\n')
+        .map(|line| {
+            line.strip_suffix('\r')
+                .unwrap_or(line)
+                .replace('\t', TAB_SPACES)
+        })
+        .collect();
+    if lines.len() > 1 && lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+fn hard_break(
+    word: &str,
+    max_width_pt: f32,
+    measure: &impl Fn(&str) -> f32,
+    out: &mut Vec<String>,
+) -> String {
+    let mut chunk = String::new();
+    for ch in word.chars() {
+        chunk.push(ch);
+        if measure(&chunk) > max_width_pt && chunk.chars().count() > 1 {
+            chunk.truncate(chunk.len() - ch.len_utf8());
+            out.push(std::mem::take(&mut chunk));
+            chunk.push(ch);
+        }
+    }
+    chunk
+}
+
 /// Greedily wrap one logical line to at most `max_width_pt`, breaking
-/// at whitespace where possible and hard-breaking a single word that
-/// is wider than the box. `measure` returns a candidate string's
-/// rendered width in points, so each caller wraps with its own font
-/// metrics (egui preview vs. Helvetica baker) while sharing the
-/// breaking rules. Multiple spaces collapse to one, as in HTML.
-/// A non-positive width disables wrapping.
+/// at whitespace boundaries without normalizing spaces and hard-breaking
+/// a single word wider than the box. `measure` returns a candidate
+/// string's rendered width in points, so each caller wraps with its own
+/// font metrics (egui preview vs. Helvetica baker) while sharing the
+/// breaking rules. A non-positive width disables wrapping.
 #[must_use]
 pub fn wrap_line(line: &str, max_width_pt: f32, measure: &impl Fn(&str) -> f32) -> Vec<String> {
-    if max_width_pt <= 0.0 {
+    if max_width_pt <= 0.0 || line.is_empty() || measure(line) <= max_width_pt {
         return vec![line.to_string()];
     }
     let mut out: Vec<String> = Vec::new();
     let mut current = String::new();
-    for word in line.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
+    let mut rest = line;
+    while !rest.is_empty() {
+        let ws_len = rest
+            .find(|c: char| !c.is_whitespace())
+            .unwrap_or(rest.len());
+        let (ws, after_ws) = rest.split_at(ws_len);
+        if after_ws.is_empty() {
+            if current.is_empty() {
+                current = hard_break(ws, max_width_pt, measure, &mut out);
+            } else {
+                let candidate = format!("{current}{ws}");
+                if measure(&candidate) <= max_width_pt {
+                    current = candidate;
+                }
+            }
+            break;
+        }
+        let word_len = after_ws.find(char::is_whitespace).unwrap_or(after_ws.len());
+        let (word, next_rest) = after_ws.split_at(word_len);
+        rest = next_rest;
+        let candidate = format!("{current}{ws}{word}");
         if measure(&candidate) <= max_width_pt {
             current = candidate;
             continue;
@@ -244,21 +299,11 @@ pub fn wrap_line(line: &str, max_width_pt: f32, measure: &impl Fn(&str) -> f32) 
         if !current.is_empty() {
             out.push(std::mem::take(&mut current));
         }
-        if measure(word) <= max_width_pt {
-            current = word.to_string();
-            continue;
-        }
-        // Single word wider than the box: hard-break it by character.
-        let mut chunk = String::new();
-        for ch in word.chars() {
-            chunk.push(ch);
-            if measure(&chunk) > max_width_pt && chunk.chars().count() > 1 {
-                chunk.truncate(chunk.len() - ch.len_utf8());
-                out.push(std::mem::take(&mut chunk));
-                chunk.push(ch);
-            }
-        }
-        current = chunk;
+        current = if measure(word) <= max_width_pt {
+            word.to_string()
+        } else {
+            hard_break(word, max_width_pt, measure, &mut out)
+        };
     }
     if !current.is_empty() || out.is_empty() {
         out.push(current);
@@ -368,13 +413,18 @@ mod tests {
 
     #[test]
     #[allow(clippy::cast_precision_loss)]
-    fn wrap_line_breaks_at_words_and_hard_breaks_long_words() {
+    fn wrap_line_breaks_at_words_preserves_spaces_and_hard_breaks_long_words() {
         // 10pt per character, so widths are easy to reason about.
         let measure = |s: &str| s.chars().count() as f32 * 10.0;
         assert_eq!(
             wrap_line("aaaa bbbb cccc", 90.0, &measure),
             vec!["aaaa bbbb", "cccc"]
         );
+        assert_eq!(
+            wrap_line("  aaaa   bbbb cc", 130.0, &measure),
+            vec!["  aaaa   bbbb", "cc"]
+        );
+        assert_eq!(wrap_line("  indented", 200.0, &measure), vec!["  indented"]);
         assert_eq!(
             wrap_line("aaaaaaaaaa", 45.0, &measure),
             vec!["aaaa", "aaaa", "aa"]
@@ -385,6 +435,7 @@ mod tests {
             vec!["aaaa bbbb"],
             "non-positive width disables wrapping"
         );
+        assert_eq!(logical_lines("\ta\tb\r\nc\n"), vec!["    a    b", "c"]);
     }
 
     #[test]

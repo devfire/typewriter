@@ -92,6 +92,16 @@ fn fixed_width_text_wraps_at_word_boundaries() {
 }
 
 #[test]
+fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
+    let mut item = fixed_width_item("  a\tb   c", 200.0);
+    let fixed_ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    item.width_pt = None;
+    let auto_ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    assert_eq!(tj_strings(&fixed_ops), vec![b"  a    b   c".to_vec()]);
+    assert_eq!(tj_strings(&fixed_ops), tj_strings(&auto_ops));
+}
+
+#[test]
 fn fixed_width_long_word_is_hard_broken() {
     let item = fixed_width_item("aaaaaaaaaa", 30.0);
     let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
@@ -432,11 +442,7 @@ fn in_place_save_replaces_file_without_temp_litter() {
     {
         use std::os::unix::fs::PermissionsExt as _;
         assert_eq!(
-            std::fs::metadata(out.path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
+            std::fs::metadata(out.path()).unwrap().permissions().mode() & 0o777,
             0o600
         );
     }

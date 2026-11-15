@@ -551,7 +551,7 @@ fn box_display_lines(
     match item.kind {
         crate::overlay::BoxKind::Signature => vec![item.signature_line()],
         crate::overlay::BoxKind::Text => {
-            let lines: Vec<String> = item.text.lines().map(ToString::to_string).collect();
+            let lines = crate::overlay::logical_lines(&item.text);
             match item.width_pt {
                 Some(width) => {
                     crate::overlay::wrap_lines(&lines, width.max(24.0), &|line: &str| {

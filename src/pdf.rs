@@ -379,10 +379,7 @@ fn box_operations(
             // baked lines fit the box the user sized. The clamp
             // mirrors the preview's minimum box width.
             let width = item.width_pt.unwrap_or_default().max(24.0);
-            let mut logical: Vec<String> = item.text.split('\n').map(ToString::to_string).collect();
-            if logical.len() > 1 && logical.last().is_some_and(String::is_empty) {
-                logical.pop();
-            }
+            let logical = crate::overlay::logical_lines(&item.text);
             wrap_lines(&logical, width, &|line: &str| {
                 helvetica::helvetica_width_pt(line, size)
             })

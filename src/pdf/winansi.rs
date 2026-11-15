@@ -1,20 +1,21 @@
 //! `WinAnsi` encoding for baked Helvetica text.
 
-/// Split text into WinAnsi-encoded lines; a single trailing empty line
-/// (from a final newline) is dropped so it emits no `Tj`.
+/// Split text into `WinAnsi`-encoded logical lines, with `\t` expanded
+/// to [`crate::overlay::TAB_SPACES`] and a single trailing empty line
+/// (from a final newline) dropped so it emits no `Tj`.
 #[must_use]
 pub fn winansi_lines(text: &str) -> Vec<Vec<u8>> {
-    let mut lines: Vec<Vec<u8>> = text.split('\n').map(winansi_bytes).collect();
-    if lines.len() > 1 && lines.last().is_some_and(Vec::is_empty) {
-        lines.pop();
-    }
-    lines
+    crate::overlay::logical_lines(text)
+        .iter()
+        .map(|line| winansi_bytes(line))
+        .collect()
 }
 
-/// Encode a string as `WinAnsi` bytes: one byte per character, `?` for
-/// unmappable characters. `\r` is stripped, other control characters
-/// below 0x20 (except `\n`) are dropped. lopdf escapes `\ ( )` itself
-/// when writing literal strings, so no pre-escaping happens here.
+/// Encode a string as `WinAnsi` bytes: one byte per character (`\t`
+/// expands to [`crate::overlay::TAB_SPACES`]), `?` for unmappable
+/// characters. `\r` is stripped, other control characters below 0x20
+/// (except `\n`) are dropped. lopdf escapes `\ ( )` itself when writing
+/// literal strings, so no pre-escaping happens here.
 #[must_use]
 pub fn winansi_bytes(s: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(s.len());
@@ -22,6 +23,7 @@ pub fn winansi_bytes(s: &str) -> Vec<u8> {
         match ch {
             '\r' => {}
             '\n' => out.push(b'\n'),
+            '\t' => out.extend_from_slice(crate::overlay::TAB_SPACES.as_bytes()),
             c if (c as u32) < 0x20 => {}
             c => out.push(winansi_char(c)),
         }
