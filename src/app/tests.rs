@@ -187,7 +187,12 @@ fn write_pdf(pages: usize) -> TempFile {
 fn reload_after_save_preserves_page_and_zoom() {
     let path = write_pdf(3);
     let mut app = test_app();
+    let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.resize_box = Some(id);
+    app.focus_editor = true;
     assert!(app.load(path.path().to_path_buf()));
+    assert_eq!(app.resize_box, None);
+    assert!(!app.focus_editor);
     app.page = 2;
     app.zoom = 1.7;
     app.reload_after_save(path.path());

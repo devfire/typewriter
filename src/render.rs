@@ -12,9 +12,12 @@ use hayro::hayro_syntax::Pdf;
 /// Caches the last rendered page texture, keyed by
 /// `(generation, page, (scale * 100.0) as i32)`: the scale is
 /// truncated to whole percents, so zooms within 1% share the
-/// cached texture.
+/// cached texture. `generation` is bumped by [`Self::invalidate`]
+/// whenever the underlying document bytes change (open, post-save
+/// reload).
 #[derive(Default)]
 pub struct PageRenderer {
+    generation: u64,
     rendered: Option<(u64, usize, i32)>,
     texture: Option<egui::TextureHandle>,
 }
@@ -40,7 +43,6 @@ impl PageRenderer {
         pdf: &Pdf,
         page_idx: usize,
         zoom: f32,
-        generation: u64,
     ) -> Result<egui::TextureHandle> {
         let pages = pdf.pages();
         let Some(page) = pages.get(page_idx) else {
@@ -49,7 +51,7 @@ impl PageRenderer {
         let scale = zoom * ctx.pixels_per_point();
         #[allow(clippy::cast_possible_truncation)]
         let scale_key = (scale * 100.0) as i32;
-        let key = (generation, page_idx, scale_key);
+        let key = (self.generation, page_idx, scale_key);
         if self.rendered == Some(key)
             && let Some(texture) = &self.texture
         {
@@ -93,6 +95,7 @@ impl PageRenderer {
     }
 
     pub fn invalidate(&mut self) {
+        self.generation += 1;
         self.rendered = None;
     }
 }
@@ -135,15 +138,17 @@ mod tests {
         let pdf = sample_pdf();
         let ctx = egui::Context::default();
         let mut renderer = PageRenderer::default();
-        let _first = renderer.render_page(&ctx, &pdf, 0, 1.0, 1).unwrap();
-        assert_eq!(renderer.rendered.map(|k| k.0), Some(1));
+        let _first = renderer.render_page(&ctx, &pdf, 0, 1.0).unwrap();
+        assert_eq!(renderer.rendered.map(|k| k.0), Some(0));
         // Same key: cache hit, key unchanged.
-        let _first = renderer.render_page(&ctx, &pdf, 0, 1.0, 1).unwrap();
+        let _first = renderer.render_page(&ctx, &pdf, 0, 1.0).unwrap();
+        assert_eq!(renderer.rendered.map(|k| k.0), Some(0));
+        // Invalidating (reopened/reloaded doc) bumps generation and re-renders
+        // under a new key, so a same-shaped page from another document cannot
+        // go stale.
+        renderer.invalidate();
+        let _second = renderer.render_page(&ctx, &pdf, 0, 1.0).unwrap();
         assert_eq!(renderer.rendered.map(|k| k.0), Some(1));
-        // New generation (reopened/reloaded doc): re-renders under new key,
-        // so a same-shaped page from another document cannot go stale.
-        let _second = renderer.render_page(&ctx, &pdf, 0, 1.0, 2).unwrap();
-        assert_eq!(renderer.rendered.map(|k| k.0), Some(2));
     }
 
     #[test]
@@ -151,6 +156,6 @@ mod tests {
         let pdf = sample_pdf();
         let ctx = egui::Context::default();
         let mut renderer = PageRenderer::default();
-        assert!(renderer.render_page(&ctx, &pdf, 99, 1.0, 1).is_err());
+        assert!(renderer.render_page(&ctx, &pdf, 99, 1.0).is_err());
     }
 }

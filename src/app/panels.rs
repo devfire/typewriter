@@ -264,8 +264,8 @@ impl TypewriterApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.set_max_width(ui.available_width());
-                for (idx, item) in &page_items {
-                    self.box_list_row(ui, *idx, item, &mut select, &mut remove);
+                for item in &page_items {
+                    self.box_list_row(ui, item, &mut select, &mut remove);
                 }
             });
         if let Some(idx) = select {
@@ -282,12 +282,11 @@ impl TypewriterApp {
     fn box_list_row(
         &self,
         ui: &mut egui::Ui,
-        idx: BoxId,
         item: &OverlayText,
         select: &mut Option<BoxId>,
         remove: &mut Option<BoxId>,
     ) {
-        let selected = self.overlays.selected == Some(idx);
+        let selected = self.overlays.selected == Some(item.id);
         let first_line: String = item
             .text
             .lines()
@@ -335,7 +334,7 @@ impl TypewriterApp {
                         },
                     );
                     if select_resp.inner.clicked() {
-                        *select = Some(idx);
+                        *select = Some(item.id);
                     }
                     let del_btn = egui::Button::new(egui::RichText::new("×").size(16.0))
                         .min_size(egui::vec2(34.0, 34.0))
@@ -345,7 +344,7 @@ impl TypewriterApp {
                         .on_hover_text("Delete this text box")
                         .clicked()
                     {
-                        *remove = Some(idx);
+                        *remove = Some(item.id);
                     }
                 });
             });

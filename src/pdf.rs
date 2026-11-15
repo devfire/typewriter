@@ -100,15 +100,6 @@ impl PdfDoc {
             }
             by_page.entry(item.page).or_default().push(item);
         }
-        let sig_face = if overlays
-            .items
-            .iter()
-            .any(|item| item.kind == BoxKind::Signature && !item.is_empty())
-        {
-            Some(signature_font::face()?)
-        } else {
-            None
-        };
         // Every signature box in the bake: the one shared embedded
         // font's widths/`ToUnicode` are built from this union.
         let all_sig_boxes: Vec<&OverlayText> = by_page
@@ -116,11 +107,28 @@ impl PdfDoc {
             .flat_map(|boxes| boxes.iter().copied())
             .filter(|item| item.kind == BoxKind::Signature)
             .collect();
+        let sig_face = if all_sig_boxes.is_empty() {
+            None
+        } else {
+            Some(signature_font::face()?)
+        };
         let mut staged = self.doc.clone();
-        // Object id of the shared Type0 signature font, created on
-        // first use in this bake and reused on every signed page so
-        // the font program is embedded once per document.
-        let mut shared_sig_font: Option<ObjectId> = None;
+        // Prepare the single shared Type0 signature font once per bake
+        // (creating it or extending an already-embedded one with the
+        // union of `all_sig_boxes`) so the font program is embedded at
+        // most once per document and `/W` + `ToUnicode` are not
+        // re-parsed on every signed page.
+        let shared_sig_font = if let Some(face) = sig_face.as_ref() {
+            let type0_id = if let Some(existing) = signature_font::find_signature_font(&staged) {
+                signature_font::extend_signature_font(&mut staged, existing, face, &all_sig_boxes)?;
+                existing
+            } else {
+                signature_font::create_signature_font(&mut staged, face, &all_sig_boxes)
+            };
+            Some(type0_id)
+        } else {
+            None
+        };
         for (page, boxes) in by_page {
             let page_id = self.page_ids[page];
             let page_box = self.boxes_pt[page];
@@ -154,14 +162,10 @@ impl PdfDoc {
                 .copied()
                 .filter(|item| item.kind == BoxKind::Signature)
                 .collect();
-            if let (false, Some(face)) = (sig_boxes.is_empty(), sig_face.as_ref()) {
-                let alias = Self::ensure_signature(
-                    &mut staged,
-                    page_id,
-                    face,
-                    &all_sig_boxes,
-                    &mut shared_sig_font,
-                )?;
+            if let (false, Some(face), Some(type0_id)) =
+                (sig_boxes.is_empty(), sig_face.as_ref(), shared_sig_font)
+            {
+                let alias = Self::ensure_signature(&mut staged, page_id, type0_id)?;
                 for item in sig_boxes {
                     operations.extend(box_operations(item, &alias, page_box, rotate, Some(face)));
                 }
@@ -252,45 +256,22 @@ impl PdfDoc {
         Ok(alias)
     }
 
-    /// Return the resource alias of the embedded Momo Signature font on
-    /// `page_id`, extending it with glyphs from `all_boxes` when it
-    /// already exists (on this page or elsewhere in the document, e.g.
-    /// after a save/reload): reusing a subset font as-is would bake
-    /// new characters at the default width with no `ToUnicode`
-    /// mapping. A font present only on another page is referenced
-    /// from this page instead of embedding a second copy. Otherwise
-    /// the shared Type0 font in `shared` is referenced from this
-    /// page, creating it (from `all_boxes`, the union of every
-    /// signature box in the bake) on first use: the font program is
-    /// embedded once per document, not once per page.
+    /// Return the resource alias on `page_id` for the shared embedded
+    /// Momo Signature font `type0_id`, reusing an existing alias when
+    /// `page_id` already references it and inserting a new `F_SIG`
+    /// entry otherwise.
     fn ensure_signature(
         doc: &mut Document,
         page_id: ObjectId,
-        face: &ttf_parser::Face<'_>,
-        all_boxes: &[&OverlayText],
-        shared: &mut Option<ObjectId>,
+        type0_id: ObjectId,
     ) -> Result<String> {
-        if let Some((alias, type0_id)) = signature_font::signature_font_on_page(doc, page_id) {
-            signature_font::extend_signature_font(doc, type0_id, face, all_boxes)?;
-            *shared = Some(type0_id);
-            return Ok(alias);
-        }
-        if let Some(type0_id) = shared.or_else(|| signature_font::find_signature_font(doc)) {
-            signature_font::extend_signature_font(doc, type0_id, face, all_boxes)?;
-            *shared = Some(type0_id);
-            let fonts = doc
-                .get_page_fonts(page_id)
-                .context("failed to read page fonts")?;
-            let alias = free_alias(&fonts, "F_SIG");
-            insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
+        if let Some((alias, _)) = signature_font::signature_font_on_page(doc, page_id) {
             return Ok(alias);
         }
         let fonts = doc
             .get_page_fonts(page_id)
             .context("failed to read page fonts")?;
         let alias = free_alias(&fonts, "F_SIG");
-        let type0_id = *shared
-            .get_or_insert_with(|| signature_font::create_signature_font(doc, face, all_boxes));
         insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
         Ok(alias)
     }

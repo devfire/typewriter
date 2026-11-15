@@ -90,16 +90,18 @@ pub struct OverlayState {
     pub selected: Option<BoxId>,
     next_id: u64,
     pub dirty: bool,
-    /// Bumped whenever the underlying document bytes change (open,
-    /// post-save reload) so the texture cache can invalidate.
-    pub doc_generation: u64,
 }
 
 impl OverlayState {
+    fn fresh_id(&mut self) -> BoxId {
+        let id = BoxId(self.next_id);
+        self.next_id += 1;
+        id
+    }
+
     /// Insert a new empty box and select it. Returns its stable id.
     pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> BoxId {
-        let id = BoxId(self.next_id);
-        self.next_id = self.next_id.wrapping_add(1);
+        let id = self.fresh_id();
         self.items
             .push(OverlayText::new(id, page, x_pt, y_top_pt, kind));
         self.selected = Some(id);
@@ -158,8 +160,7 @@ impl OverlayState {
         source.x_pt = (source.x_pt + PASTE_OFFSET_PT).max(0.0);
         source.y_top_pt = (source.y_top_pt + PASTE_OFFSET_PT).max(0.0);
         source.page = page;
-        let id = BoxId(self.next_id);
-        self.next_id = self.next_id.wrapping_add(1);
+        let id = self.fresh_id();
         let mut item = source.clone();
         item.id = id;
         self.items.push(item);
@@ -177,13 +178,10 @@ impl OverlayState {
         Some(self.paste(&mut source, page))
     }
 
-    /// Boxes on `page`, paired with their stable ids.
-    pub fn by_page(&self, page: usize) -> Vec<(BoxId, &OverlayText)> {
-        self.items
-            .iter()
-            .filter(|item| item.page == page)
-            .map(|item| (item.id, item))
-            .collect()
+    /// Boxes on `page`.
+    #[must_use]
+    pub fn by_page(&self, page: usize) -> Vec<&OverlayText> {
+        self.items.iter().filter(|item| item.page == page).collect()
     }
 
     /// Drop the selected box if it is empty (click placed it but the
@@ -192,14 +190,7 @@ impl OverlayState {
         if let Some(sel) = self.selected
             && self.item(sel).is_some_and(OverlayText::is_empty)
         {
-            let pos = self
-                .items
-                .iter()
-                .position(|item| item.id == sel)
-                .unwrap_or(usize::MAX);
-            if pos != usize::MAX {
-                self.items.remove(pos);
-            }
+            self.items.retain(|item| item.id != sel);
             self.selected = None;
         }
     }
@@ -209,11 +200,6 @@ impl OverlayState {
         self.items.clear();
         self.selected = None;
         self.dirty = false;
-        self.doc_generation = self.doc_generation.wrapping_add(1);
-    }
-
-    pub fn bump_generation(&mut self) {
-        self.doc_generation = self.doc_generation.wrapping_add(1);
     }
 }
 
@@ -525,6 +511,14 @@ mod tests {
         state.remove(first);
         assert_eq!(state.selected, Some(target));
         assert_eq!(state.item(target).unwrap().text, "keep me");
+        assert_eq!(state.items.len(), 1);
+        assert_eq!(state.by_page(0)[0].id, target);
+        state.drop_empty_selected();
+        assert_eq!(state.selected, Some(target));
+        let empty = state.add(0, 50.0, 60.0, BoxKind::Text);
+        assert_eq!(state.selected, Some(empty));
+        state.drop_empty_selected();
+        assert_eq!(state.selected, None);
         assert_eq!(state.items.len(), 1);
     }
 }

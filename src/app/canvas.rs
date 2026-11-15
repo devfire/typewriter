@@ -112,8 +112,7 @@ impl TypewriterApp {
             self.fit_pending = false;
         }
         let zoom = self.zoom;
-        let generation = self.overlays.doc_generation;
-        let texture = match self.renderer.render_page(ctx, pdf, page, zoom, generation) {
+        let texture = match self.renderer.render_page(ctx, pdf, page, zoom) {
             Ok(texture) => Some(texture),
             Err(err) => {
                 self.status = format!("Render failed: {err:#}");
@@ -246,9 +245,8 @@ impl TypewriterApp {
         // and its lines/width come from the layout cache.
         let box_indices: Vec<BoxId> = self
             .overlays
-            .items
-            .iter()
-            .filter(|item| item.page == page)
+            .by_page(page)
+            .into_iter()
             .map(|item| item.id)
             .collect();
         let mut box_rects: Vec<egui::Rect> = Vec::with_capacity(box_indices.len());

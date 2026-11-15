@@ -153,11 +153,10 @@ impl TypewriterApp {
                 return false;
             }
         };
-        self.overlays.items.clear();
-        self.overlays.selected = None;
-        self.overlays.dirty = false;
-        self.overlays.bump_generation();
+        self.overlays.clear_baked();
         self.renderer.invalidate();
+        self.resize_box = None;
+        self.focus_editor = false;
         self.canvas_view = None;
         self.page = 0;
         self.pdf_doc = Some(doc);
