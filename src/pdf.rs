@@ -12,6 +12,10 @@ use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat, dictionary};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Counter for unique temp-file names used by atomic saves.
+static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Loaded PDF. The raw file bytes live in one `Arc<Vec<u8>>` shared
 /// with hayro's renderer (`PdfData: From<Arc<Vec<u8>>>`), so no
@@ -78,7 +82,9 @@ impl PdfDoc {
     /// The bake is staged on a clone of the document and swapped into
     /// `self` only after the save succeeds, so a failure on any page or
     /// during the write leaves `self.doc` and `overlays` unchanged and a
-    /// retry cannot double-bake earlier pages.
+    /// retry cannot double-bake earlier pages. The file write itself is
+    /// atomic (temp file in the target directory + `rename`), so an
+    /// in-place save never leaves a truncated original behind.
     pub fn bake_and_save(&mut self, overlays: &mut OverlayState, out: &Path) -> Result<()> {
         let mut by_page: BTreeMap<usize, Vec<&OverlayText>> = BTreeMap::new();
         for item in overlays.items.iter().filter(|item| !item.is_empty()) {
@@ -164,12 +170,58 @@ impl PdfDoc {
                 .add_to_page_content(page_id, Content { operations })
                 .context("failed to append overlay content stream")?;
         }
-        staged
-            .save(out)
-            .with_context(|| format!("failed to save {}", out.display()))?;
+        Self::atomic_save(&mut staged, out)?;
         self.doc = staged;
         overlays.clear_baked();
         Ok(())
+    }
+
+    /// Write `staged` to `out` without ever truncating `out` in place.
+    ///
+    /// The document is saved to a unique temp file in the same directory
+    /// (so the final `rename` stays on one filesystem and is atomic),
+    /// `sync_all`-ed, then renamed over `out`. A failed write leaves the
+    /// original intact and removes the temp file. When `out` already
+    /// exists, its permissions are re-applied to the replacement.
+    fn atomic_save(staged: &mut Document, out: &Path) -> Result<()> {
+        let dir = out
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map_or_else(|| std::path::PathBuf::from("."), Path::to_path_buf);
+        let stem = out.file_name().map_or_else(
+            || std::ffi::OsString::from("out.pdf"),
+            std::ffi::OsStr::to_os_string,
+        );
+        let seq = SAVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(&stem);
+        tmp_name.push(format!(".tmp-{}-{seq}", std::process::id()));
+        let tmp = dir.join(tmp_name);
+        let result = (|| {
+            let permissions = std::fs::metadata(out).map(|m| m.permissions()).ok();
+            staged
+                .save(&tmp)
+                .with_context(|| format!("failed to save {}", out.display()))?;
+            if let Some(permissions) = permissions {
+                std::fs::set_permissions(&tmp, permissions).with_context(|| {
+                    format!("failed to preserve permissions for {}", out.display())
+                })?;
+            }
+            std::fs::File::open(&tmp)
+                .with_context(|| format!("failed to sync {}", out.display()))?
+                .sync_all()
+                .with_context(|| format!("failed to sync {}", out.display()))?;
+            std::fs::rename(&tmp, out)
+                .with_context(|| format!("failed to save {}", out.display()))?;
+            if let Ok(dir_fd) = std::fs::File::open(&dir) {
+                let _ = dir_fd.sync_all();
+            }
+            Ok::<(), anyhow::Error>(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
     }
 
     /// Return the resource alias of a usable Helvetica on `page_id`,

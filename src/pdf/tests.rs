@@ -387,6 +387,68 @@ fn bake_with_out_of_range_page_bails_without_dropping_boxes() {
 }
 
 #[test]
+fn failed_in_place_save_leaves_original_intact() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let bytes_before = std::fs::read(out.path()).unwrap();
+    // An in-place save that fails before staging must not touch the file.
+    let mut bad = OverlayState::default();
+    let idx = bad.add(99, 72.0, 72.0, BoxKind::Text);
+    bad.item_mut(idx).unwrap().text = "Hello".to_string();
+    assert!(pdf.bake_and_save(&mut bad, out.path()).is_err());
+    assert_eq!(std::fs::read(out.path()).unwrap(), bytes_before);
+    assert!(PdfDoc::open(out.path()).is_ok());
+}
+
+#[test]
+fn in_place_save_replaces_file_without_temp_litter() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = std::fs::metadata(out.path()).unwrap().permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(out.path(), permissions).unwrap();
+    }
+    // Second save rewrites the same path through the atomic path.
+    pdf.bake_and_save(&mut OverlayState::default(), out.path())
+        .unwrap();
+    let file_name = out.path().file_name().unwrap().to_string_lossy();
+    let prefix = format!(".{file_name}.tmp-");
+    let litter: Vec<_> = std::fs::read_dir(out.path().parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name.to_string_lossy().starts_with(&prefix))
+        .collect();
+    assert!(litter.is_empty(), "temp files left behind: {litter:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(out.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    let text = PdfDoc::open(out.path())
+        .unwrap()
+        .doc
+        .extract_text(&[1])
+        .unwrap();
+    assert!(text.contains("Hello"), "baked text missing: {text:?}");
+}
+
+#[test]
 fn open_without_media_or_crop_box_is_an_error() {
     let mut doc = Document::new();
     let page_tree_id = doc.new_object_id();
