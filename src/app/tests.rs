@@ -413,3 +413,74 @@ fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
         item.width_pt
     );
 }
+
+#[test]
+fn dragging_box_clamps_to_page_bounds() {
+    use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Vec2};
+
+    let mut app = test_app();
+    let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
+    {
+        let item = app.overlays.item_mut(id).unwrap();
+        item.text = "Hello".to_string();
+        item.width_pt = Some(80.0);
+    }
+
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
+    let ctx = Context::default();
+    let run = |app: &mut TypewriterApp, events: Vec<Event>| {
+        let _ = ctx.run(
+            RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..RawInput::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let page_resp = ui.allocate_rect(screen, Sense::click_and_drag());
+                    app.draw_boxes(ui, screen, 0, 1.0, &page_resp);
+                });
+            },
+        );
+    };
+
+    // Frame 0: register box rect [100, 180] x [100, 114.4].
+    run(&mut app, Vec::new());
+
+    let start = Pos2::new(120.0, 105.0);
+    let far_right_bottom = Pos2::new(900.0, 1000.0);
+    run(&mut app, vec![Event::PointerMoved(start)]);
+    run(
+        &mut app,
+        vec![Event::PointerButton {
+            pos: start,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    run(&mut app, vec![Event::PointerMoved(far_right_bottom)]);
+    run(
+        &mut app,
+        vec![Event::PointerButton {
+            pos: far_right_bottom,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+
+    let item = app.overlays.item(id).unwrap();
+    let max_left = 612.0 - 80.0;
+    let max_top = 792.0 - crate::overlay::LEADING * item.size_pt;
+    assert!(
+        (item.x_pt - max_left).abs() <= 1e-4,
+        "x_pt should clamp to {max_left}, got {}",
+        item.x_pt
+    );
+    assert!(
+        (item.y_top_pt - max_top).abs() <= 1e-4,
+        "y_top_pt should clamp to {max_top}, got {}",
+        item.y_top_pt
+    );
+}
