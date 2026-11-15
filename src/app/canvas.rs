@@ -1,7 +1,7 @@
 //! Page canvas: rendered page, overlay boxes, and box layout cache.
 
 use super::{ACCENT, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, TypewriterApp, typewriter_icon};
-use crate::overlay::{self, BoxId};
+use crate::overlay::{self, BoxId, BoxKind, OverlayText};
 use eframe::egui;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -13,22 +13,20 @@ use std::sync::Arc;
 struct BoxLayoutKey {
     text_hash: u64,
     size_pt_bits: u32,
-    kind: crate::overlay::BoxKind,
+    kind: BoxKind,
     width_pt_bits: Option<u32>,
     zoom_bits: u32,
 }
 
 /// Laid-out display lines and measured auto width for one box,
-/// reused across frames until its `BoxLayoutKey` changes. Sharing
-/// the lines behind an `Arc` makes a cache hit allocation-free
-/// apart from the `Arc` bump.
+/// reused across frames until its `BoxLayoutKey` changes.
 pub(super) struct CachedBoxLayout {
     key: BoxLayoutKey,
     lines: Arc<[String]>,
     auto_width_pt: f32,
 }
 
-fn box_layout_key(item: &crate::overlay::OverlayText, zoom: f32) -> BoxLayoutKey {
+fn box_layout_key(item: &OverlayText, zoom: f32) -> BoxLayoutKey {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     item.text.hash(&mut hasher);
     BoxLayoutKey {
@@ -65,19 +63,18 @@ impl TypewriterApp {
                 .color(ui.visuals().weak_text_color()),
             );
             ui.add_space(20.0);
+            let open_btn = egui::Button::new(
+                egui::RichText::new("Open a PDF…")
+                    .size(16.0)
+                    .strong()
+                    .color(egui::Color32::WHITE),
+            )
+            .fill(ACCENT)
+            .stroke(egui::Stroke::NONE)
+            .min_size(egui::vec2(200.0, 48.0))
+            .corner_radius(RADIUS);
             if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Open a PDF…")
-                            .size(16.0)
-                            .strong()
-                            .color(egui::Color32::WHITE),
-                    )
-                    .fill(ACCENT)
-                    .stroke(egui::Stroke::NONE)
-                    .min_size(egui::vec2(200.0, 48.0))
-                    .corner_radius(RADIUS),
-                )
+                .add(open_btn)
                 .on_hover_text("Open a PDF  (Ctrl+O)")
                 .clicked()
             {
@@ -198,11 +195,8 @@ impl TypewriterApp {
         }
     }
 
-    /// Display lines and measured auto width for box `idx`, served
-    /// from `box_layouts` when text, size, kind, fixed width, and
-    /// zoom are unchanged, so the steady-state frame path performs
-    /// no glyph layout and no `String`/`Vec<String>` cloning. The
-    /// expensive layout runs only on a cache miss.
+    /// Display lines and measured auto width for box `idx`, cached by
+    /// text, size, kind, fixed width, and zoom.
     fn box_layout(&mut self, ui: &egui::Ui, idx: BoxId, zoom: f32) -> Option<(Arc<[String]>, f32)> {
         let item = self.overlays.item(idx)?;
         let key = box_layout_key(item, zoom);
@@ -237,9 +231,6 @@ impl TypewriterApp {
     ) {
         self.box_layouts
             .retain(|id, _| self.overlays.item(*id).is_some());
-        // Stable ids only: boxes are never cloned. Each box's scalar
-        // fields are copied out below before any `&mut self` call,
-        // and its lines/width come from the layout cache.
         let box_indices: Vec<BoxId> = self
             .overlays
             .by_page(page)
@@ -259,15 +250,8 @@ impl TypewriterApp {
             let line_count = display_lines.len().max(1) as f32;
             let width_pt = item.width_pt.map_or(auto_width_pt, |w| w.max(24.0));
             let height_pt = line_count * overlay::LEADING * item.size_pt;
-            // The script font's glyphs rise ~1.35 em above and swash
-            // ~0.9 em below the baseline, far outside the em box
-            // (0.8/0.4 em). Pad the visual box so they are not clipped;
-            // the baseline (and thus the baked PDF) is unaffected.
+            // Pad visual box for script font ascenders/descenders outside the em box.
             let (pad_top_pt, pad_bottom_pt) = box_vertical_pad_pt(item);
-            let size_pt = item.size_pt;
-            let kind = item.kind;
-            let text_is_empty = item.text.is_empty();
-            let color = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
             let rect = egui::Rect::from_min_max(
                 egui::pos2(top_left.x, top_left.y - pad_top_pt * zoom),
                 egui::pos2(
@@ -301,6 +285,9 @@ impl TypewriterApp {
                 }
                 self.overlays.dirty = true;
             }
+            let Some(item) = self.overlays.item(idx) else {
+                continue;
+            };
             let painter = ui.painter_at(rect.expand(4.0));
             if selected {
                 painter.rect_filled(rect, 2.0, egui::Color32::from_white_alpha(170));
@@ -310,21 +297,7 @@ impl TypewriterApp {
                     egui::Stroke::new(1.5_f32, ACCENT),
                     egui::StrokeKind::Outside,
                 );
-            }
-            paint_box_text(&PaintBoxText {
-                painter: &painter,
-                display_lines: &display_lines,
-                font: &font,
-                color,
-                rect,
-                zoom,
-                selected,
-                pad_top_pt,
-                size_pt,
-                kind,
-                text_is_empty,
-            });
-            if selected {
+                paint_box_text(&painter, item, &display_lines, &font, rect, zoom, true);
                 painter.rect_filled(handle_rect, 3.0, ACCENT);
                 painter.rect_stroke(
                     handle_rect,
@@ -332,6 +305,8 @@ impl TypewriterApp {
                     egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                     egui::StrokeKind::Outside,
                 );
+            } else {
+                paint_box_text(&painter, item, &display_lines, &font, rect, zoom, false);
             }
         }
         self.place_box_on_click(page, page_rect, zoom, page_resp, &box_rects);
@@ -347,8 +322,8 @@ impl TypewriterApp {
         box_rects: &[egui::Rect],
     ) {
         let new_kind = match self.mode {
-            Mode::Type => Some(crate::overlay::BoxKind::Text),
-            Mode::Sign => Some(crate::overlay::BoxKind::Signature),
+            Mode::Type => Some(BoxKind::Text),
+            Mode::Sign => Some(BoxKind::Signature),
             Mode::Navigate => None,
         };
         if let Some(kind) = new_kind
@@ -362,8 +337,8 @@ impl TypewriterApp {
         }
     }
 
-    /// Bottom-right corner handle of a selected box: drag to set a
-    /// fixed box width, double-click to return to auto-fit.
+    /// Bottom-right corner handle of a selected box: drag to resize width,
+    /// double-click to return to auto-fit.
     fn resize_handle(
         &mut self,
         ui: &mut egui::Ui,
@@ -372,12 +347,9 @@ impl TypewriterApp {
         width_pt: f32,
         zoom: f32,
     ) {
+        let id = ui.id().with(("tw-resize", idx));
         let resize_resp = ui
-            .interact(
-                handle_rect,
-                ui.id().with(("tw-resize", idx)),
-                egui::Sense::drag(),
-            )
+            .interact(handle_rect, id, egui::Sense::drag())
             .on_hover_text("Drag to widen/narrow the box \u{00b7} double-click for auto-fit");
         if resize_resp.double_clicked() {
             if let Some(current) = self.overlays.item_mut(idx) {
@@ -405,62 +377,33 @@ impl TypewriterApp {
     }
 }
 
-/// Inputs for [`paint_box_text`], grouped so the call site names
-/// every argument (and no `too_many_arguments` allow is needed).
-struct PaintBoxText<'a> {
-    painter: &'a egui::Painter,
-    display_lines: &'a [String],
-    font: &'a egui::FontId,
-    color: egui::Color32,
+/// Draw a box's lines (plus the empty-box placeholder when selected) inside `rect`.
+fn paint_box_text(
+    painter: &egui::Painter,
+    item: &OverlayText,
+    display_lines: &[String],
+    font: &egui::FontId,
     rect: egui::Rect,
     zoom: f32,
     selected: bool,
-    pad_top_pt: f32,
-    size_pt: f32,
-    kind: crate::overlay::BoxKind,
-    text_is_empty: bool,
-}
-
-/// Draw a box's lines (plus the empty-box placeholder when selected)
-/// inside `rect`.
-fn paint_box_text(args: &PaintBoxText<'_>) {
-    let PaintBoxText {
-        painter,
-        display_lines,
-        font,
-        color,
-        rect,
-        zoom,
-        selected,
-        pad_top_pt,
-        size_pt,
-        kind,
-        text_is_empty,
-    } = *args;
-    let first_baseline_y = rect.min.y + (pad_top_pt + overlay::ASCENT * size_pt) * zoom;
+) {
+    let (pad_top_pt, _) = box_vertical_pad_pt(item);
+    let color = egui::Color32::from_rgb(item.color[0], item.color[1], item.color[2]);
+    let first_baseline_y = rect.min.y + (pad_top_pt + overlay::ASCENT * item.size_pt) * zoom;
     for (line_idx, line) in display_lines.iter().enumerate() {
         #[allow(clippy::cast_precision_loss)]
-        let baseline_y = first_baseline_y + (line_idx as f32) * overlay::LEADING * size_pt * zoom;
-        paint_line_at_baseline(
-            painter,
-            egui::pos2(rect.min.x, baseline_y),
-            line,
-            font,
-            color,
-        );
+        let baseline_y =
+            first_baseline_y + (line_idx as f32) * overlay::LEADING * item.size_pt * zoom;
+        let pos = egui::pos2(rect.min.x, baseline_y);
+        paint_line_at_baseline(painter, pos, line, font, color);
     }
-    if text_is_empty && selected {
-        let placeholder = match kind {
-            crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
-            crate::overlay::BoxKind::Text => "Type here\u{2026}",
+    if item.text.is_empty() && selected {
+        let placeholder = match item.kind {
+            BoxKind::Signature => "Sign here\u{2026}",
+            BoxKind::Text => "Type here\u{2026}",
         };
-        paint_line_at_baseline(
-            painter,
-            egui::pos2(rect.min.x, first_baseline_y),
-            placeholder,
-            font,
-            egui::Color32::GRAY,
-        );
+        let pos = egui::pos2(rect.min.x, first_baseline_y);
+        paint_line_at_baseline(painter, pos, placeholder, font, egui::Color32::GRAY);
     }
 }
 
@@ -493,11 +436,11 @@ fn measured_width_pt(
     lines: &[String],
     font: &egui::FontId,
     zoom: f32,
-    kind: crate::overlay::BoxKind,
+    kind: BoxKind,
 ) -> f32 {
     let min_pt = match kind {
-        crate::overlay::BoxKind::Signature => 96.0,
-        crate::overlay::BoxKind::Text => 48.0,
+        BoxKind::Signature => 96.0,
+        BoxKind::Text => 48.0,
     };
     let widest_pt = lines
         .iter()
@@ -506,21 +449,19 @@ fn measured_width_pt(
     (widest_pt + 8.0).max(min_pt)
 }
 
-/// Extra visual box height (above, below) in points, beyond the em
-/// box. Signatures need it for the script font's tall ascenders and
-/// swash descenders; ordinary text fits inside its em box.
-fn box_vertical_pad_pt(item: &crate::overlay::OverlayText) -> (f32, f32) {
+/// Extra visual box height (above, below) in points for script ascenders/descenders.
+fn box_vertical_pad_pt(item: &OverlayText) -> (f32, f32) {
     match item.kind {
-        crate::overlay::BoxKind::Signature => (0.70 * item.size_pt, 0.50 * item.size_pt),
-        crate::overlay::BoxKind::Text => (0.0, 0.0),
+        BoxKind::Signature => (0.70 * item.size_pt, 0.50 * item.size_pt),
+        BoxKind::Text => (0.0, 0.0),
     }
 }
 
 /// Preview font for a box: Momo Signature for signatures, proportional else.
-fn box_font(item: &crate::overlay::OverlayText, zoom: f32) -> egui::FontId {
+fn box_font(item: &OverlayText, zoom: f32) -> egui::FontId {
     match item.kind {
-        crate::overlay::BoxKind::Signature => crate::signature::font_id(item.size_pt * zoom),
-        crate::overlay::BoxKind::Text => egui::FontId::proportional(item.size_pt * zoom),
+        BoxKind::Signature => crate::signature::font_id(item.size_pt * zoom),
+        BoxKind::Text => egui::FontId::proportional(item.size_pt * zoom),
     }
 }
 
@@ -534,25 +475,21 @@ fn line_width_pt(ui: &egui::Ui, line: &str, font: &egui::FontId, zoom: f32) -> f
     }) / zoom
 }
 
-/// Lines as drawn: signatures are always a single flattened line;
-/// fixed-width text boxes wrap at their width, as the baker wraps
-/// them (each side with its own font's metrics).
+/// Lines as drawn: single flattened line for signatures, wrapped for fixed-width text.
 fn box_display_lines(
     ui: &egui::Ui,
-    item: &crate::overlay::OverlayText,
+    item: &OverlayText,
     font: &egui::FontId,
     zoom: f32,
 ) -> Vec<String> {
     match item.kind {
-        crate::overlay::BoxKind::Signature => vec![item.signature_line()],
-        crate::overlay::BoxKind::Text => {
-            let lines = crate::overlay::logical_lines(&item.text);
+        BoxKind::Signature => vec![item.signature_line()],
+        BoxKind::Text => {
+            let lines = overlay::logical_lines(&item.text);
             match item.width_pt {
-                Some(width) => {
-                    crate::overlay::wrap_lines(&lines, width.max(24.0), &|line: &str| {
-                        line_width_pt(ui, line, font, zoom)
-                    })
-                }
+                Some(width) => overlay::wrap_lines(&lines, width.max(24.0), &|line: &str| {
+                    line_width_pt(ui, line, font, zoom)
+                }),
                 None => lines,
             }
         }

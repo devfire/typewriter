@@ -87,26 +87,16 @@ fn sidebar_width_is_not_pushed_out_by_hint_text_when_resized_narrow() {
     // release, then move the mouse around without holding any button.
     let handle = Pos2::new(initial_width, 300.0);
     let narrow = Pos2::new(250.0, 300.0);
+    let btn = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
     let _ = run_sidebar(&mut app, vec![Event::PointerMoved(handle)]);
-    let _ = run_sidebar(
-        &mut app,
-        vec![Event::PointerButton {
-            pos: handle,
-            button: PointerButton::Primary,
-            pressed: true,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    let _ = run_sidebar(&mut app, vec![btn(handle, true)]);
     let dragged_width = run_sidebar(&mut app, vec![Event::PointerMoved(narrow)]);
-    let _ = run_sidebar(
-        &mut app,
-        vec![Event::PointerButton {
-            pos: narrow,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: egui::Modifiers::NONE,
-        }],
-    );
+    let _ = run_sidebar(&mut app, vec![btn(narrow, false)]);
 
     assert!(
         (initial_width - 300.0).abs() <= f32::EPSILON,
@@ -119,14 +109,9 @@ fn sidebar_width_is_not_pushed_out_by_hint_text_when_resized_narrow() {
 
     // Subsequent frames with mouse movement (both empty state and with selected boxes)
     // must keep the narrowed width rather than creeping or snapping back out.
-    for i in 0..20 {
-        let width = run_sidebar(
-            &mut app,
-            vec![Event::PointerMoved(Pos2::new(
-                120.0 + f32::from(u8::try_from(i).unwrap()),
-                200.0,
-            ))],
-        );
+    for i in 0_u8..20 {
+        let pos = Pos2::new(120.0 + f32::from(i), 200.0);
+        let width = run_sidebar(&mut app, vec![Event::PointerMoved(pos)]);
         assert!(
             (width - dragged_width).abs() <= f32::EPSILON,
             "empty-state sidebar crept from {dragged_width} to {width} on frame {i}"
@@ -136,14 +121,9 @@ fn sidebar_width_is_not_pushed_out_by_hint_text_when_resized_narrow() {
     for kind in [BoxKind::Text, BoxKind::Signature] {
         let id = app.overlays.add(0, 10.0, 20.0, kind);
         app.overlays.item_mut(id).unwrap().text = "WWWWWWWWWWWWWWWWWWWWWWWWWW".to_string();
-        for i in 0..10 {
-            let width = run_sidebar(
-                &mut app,
-                vec![Event::PointerMoved(Pos2::new(
-                    140.0 + f32::from(u8::try_from(i).unwrap()),
-                    220.0,
-                ))],
-            );
+        for i in 0_u8..10 {
+            let pos = Pos2::new(140.0 + f32::from(i), 220.0);
+            let width = run_sidebar(&mut app, vec![Event::PointerMoved(pos)]);
             assert!(
                 (width - dragged_width).abs() <= f32::EPSILON,
                 "sidebar with {kind:?} crept from {dragged_width} to {width} on frame {i}"
@@ -400,11 +380,9 @@ fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
 
     let mut app = test_app();
     let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
-    {
-        let item = app.overlays.item_mut(id).unwrap();
-        item.text = "Hello".to_string();
-        item.width_pt = Some(80.0);
-    }
+    let item = app.overlays.item_mut(id).unwrap();
+    item.text = "Hello".to_string();
+    item.width_pt = Some(80.0);
 
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
     drag_canvas(
@@ -416,17 +394,9 @@ fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
     );
 
     let item = app.overlays.item(id).unwrap();
-    assert!(
-        (item.x_pt - 100.0).abs() <= f32::EPSILON && (item.y_top_pt - 100.0).abs() <= f32::EPSILON,
-        "dragging inner quadrant of resize handle must not move box, got ({}, {})",
-        item.x_pt,
-        item.y_top_pt
-    );
-    assert!(
-        (item.width_pt.unwrap() - 130.0).abs() <= f32::EPSILON,
-        "dragging inner quadrant of resize handle by +50pt must widen box from 80 to 130, got {:?}",
-        item.width_pt
-    );
+    assert!((item.x_pt - 100.0).abs() <= f32::EPSILON);
+    assert!((item.y_top_pt - 100.0).abs() <= f32::EPSILON);
+    assert!((item.width_pt.unwrap() - 130.0).abs() <= f32::EPSILON);
 }
 
 #[test]
@@ -435,11 +405,9 @@ fn dragging_box_clamps_to_page_bounds() {
 
     let mut app = test_app();
     let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
-    {
-        let item = app.overlays.item_mut(id).unwrap();
-        item.text = "Hello".to_string();
-        item.width_pt = Some(80.0);
-    }
+    let item = app.overlays.item_mut(id).unwrap();
+    item.text = "Hello".to_string();
+    item.width_pt = Some(80.0);
 
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
     drag_canvas(
@@ -453,14 +421,10 @@ fn dragging_box_clamps_to_page_bounds() {
     let item = app.overlays.item(id).unwrap();
     let max_left = 612.0 - 80.0;
     let max_top = 792.0 - crate::overlay::LEADING * item.size_pt;
-    assert!(
-        (item.x_pt - max_left).abs() <= 1e-4,
-        "x_pt should clamp to {max_left}, got {}",
-        item.x_pt
-    );
+    assert!((item.x_pt - max_left).abs() <= 1e-4, "got {}", item.x_pt);
     assert!(
         (item.y_top_pt - max_top).abs() <= 1e-4,
-        "y_top_pt should clamp to {max_top}, got {}",
+        "got {}",
         item.y_top_pt
     );
 }

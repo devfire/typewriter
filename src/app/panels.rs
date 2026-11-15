@@ -298,16 +298,14 @@ impl TypewriterApp {
             .take(26)
             .collect();
         let row_inner_width = (ui.available_width() - 24.0).max(0.0);
+        let stroke = if selected {
+            egui::Stroke::new(1.5_f32, ACCENT)
+        } else {
+            ui.visuals().widgets.noninteractive.bg_stroke
+        };
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
-            .stroke(egui::Stroke::new(
-                if selected { 1.5_f32 } else { 1.0_f32 },
-                if selected {
-                    ACCENT
-                } else {
-                    ui.visuals().widgets.noninteractive.bg_stroke.color
-                },
-            ))
+            .stroke(stroke)
             .corner_radius(RADIUS)
             .inner_margin(egui::Margin::symmetric(10, 6))
             .show(ui, |ui| {
@@ -359,50 +357,31 @@ impl TypewriterApp {
     fn edit_actions(&mut self, ui: &mut egui::Ui) {
         let has_selection = self.overlays.selected.is_some();
         let can_paste = self.clipboard.is_some() && self.page_count() > 0;
-        let spacing = ui.spacing().item_spacing.x;
-        let half = (ui.available_width() - spacing).max(0.0) / 2.0;
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    has_selection,
-                    big_button("Copy").min_size(egui::vec2(half, BTN_H)),
-                )
-                .on_hover_text("Copy selected box  (Ctrl+C)")
+        let half = (ui.available_width() - ui.spacing().item_spacing.x).max(0.0) / 2.0;
+        let btn = |ui: &mut egui::Ui, enabled: bool, label: &str, tip: &str| {
+            ui.add_enabled(enabled, big_button(label).min_size(egui::vec2(half, BTN_H)))
+                .on_hover_text(tip)
                 .clicked()
-            {
+        };
+        ui.horizontal(|ui| {
+            if btn(ui, has_selection, "Copy", "Copy selected box  (Ctrl+C)") {
                 self.copy_selected();
             }
-            if ui
-                .add_enabled(
-                    has_selection,
-                    big_button("Cut").min_size(egui::vec2(half, BTN_H)),
-                )
-                .on_hover_text("Cut selected box  (Ctrl+X)")
-                .clicked()
-            {
+            if btn(ui, has_selection, "Cut", "Cut selected box  (Ctrl+X)") {
                 self.cut_selected();
             }
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    can_paste,
-                    big_button("Paste").min_size(egui::vec2(half, BTN_H)),
-                )
-                .on_hover_text("Paste box onto this page  (Ctrl+V)")
-                .clicked()
-            {
+            if btn(ui, can_paste, "Paste", "Paste box onto this page  (Ctrl+V)") {
                 self.paste_clipboard();
             }
-            if ui
-                .add_enabled(
-                    has_selection,
-                    big_button("Duplicate").min_size(egui::vec2(half, BTN_H)),
-                )
-                .on_hover_text("Duplicate selected box  (Ctrl+D)")
-                .clicked()
-            {
+            if btn(
+                ui,
+                has_selection,
+                "Duplicate",
+                "Duplicate selected box  (Ctrl+D)",
+            ) {
                 self.duplicate_selected();
             }
         });

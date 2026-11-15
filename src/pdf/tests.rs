@@ -24,29 +24,25 @@ fn baseline_uses_ascent_not_full_size() {
 
 #[test]
 fn two_lines_produce_two_tj_and_one_td() {
-    let item = OverlayText {
-        id: crate::overlay::BoxId::default(),
-        kind: BoxKind::Text,
-        page: 0,
-        x_pt: 10.0,
-        y_top_pt: 20.0,
-        text: "a\nb".to_string(),
-        size_pt: 12.0,
-        color: [0, 0, 255],
-        width_pt: None,
-    };
+    let mut item = OverlayText::new(
+        crate::overlay::BoxId::default(),
+        0,
+        10.0,
+        20.0,
+        BoxKind::Text,
+    );
+    item.text = "a\nb".to_string();
+    item.color = [0, 0, 255];
     let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
     assert_eq!(
         operators,
         vec!["q", "BT", "rg", "Tf", "Tm", "Tj", "Td", "Tj", "ET", "Q"]
     );
-    let td = &ops[6];
-    assert!(td.operands[0].as_float().unwrap().abs() < 0.001);
-    assert!((td.operands[1].as_float().unwrap() + 14.4).abs() < 0.001);
+    assert!(ops[6].operands[0].as_float().unwrap().abs() < 0.001);
+    assert!((ops[6].operands[1].as_float().unwrap() + 14.4).abs() < 0.001);
 }
 
-/// Literal strings of every `Tj` in `ops`, in order.
 fn tj_strings(ops: &[Operation]) -> Vec<Vec<u8>> {
     ops.iter()
         .filter(|op| op.operator == "Tj")
@@ -55,30 +51,26 @@ fn tj_strings(ops: &[Operation]) -> Vec<Vec<u8>> {
 }
 
 fn fixed_width_item(text: &str, width_pt: f32) -> OverlayText {
-    OverlayText {
-        id: crate::overlay::BoxId::default(),
-        kind: BoxKind::Text,
-        page: 0,
-        x_pt: 10.0,
-        y_top_pt: 20.0,
-        text: text.to_string(),
-        size_pt: 12.0,
-        color: [0, 0, 0],
-        width_pt: Some(width_pt),
-    }
+    let mut item = OverlayText::new(
+        crate::overlay::BoxId::default(),
+        0,
+        10.0,
+        20.0,
+        BoxKind::Text,
+    );
+    item.text = text.to_string();
+    item.width_pt = Some(width_pt);
+    item
 }
 
 #[test]
 fn helvetica_width_uses_standard_metrics() {
-    // W is 944/1000 em, i is 222/1000 em at 12pt.
     assert!((helvetica::helvetica_width_pt("WW", 12.0) - 22.656).abs() < 0.001);
     assert!((helvetica::helvetica_width_pt("ii", 12.0) - 5.328).abs() < 0.001);
 }
 
 #[test]
 fn fixed_width_text_wraps_at_word_boundaries() {
-    // Helvetica at 12pt: "aaaa" is 26.688pt (fits 30pt), but
-    // "aaaa bbbb" is 56.7pt, so every word lands on its own line.
     let item = fixed_width_item("aaaa bbbb cccc", 30.0);
     let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     assert_eq!(
@@ -171,34 +163,15 @@ fn rotated_pages_bake_text_at_previewed_position() {
 
 #[test]
 fn cropped_pages_bake_text_at_previewed_position() {
-    // MediaBox 612x792 at the origin; CropBox inset by (36, 48) with a
-    // non-zero origin, so the visible page is 540x696 starting at
-    // (36, 48). hayro renders the crop box, so the baker must too.
-    let mut doc = Document::new();
-    let page_tree_id = doc.new_object_id();
-    let page_id = doc.add_object(dictionary! {
-        "Type" => "Page",
-        "Parent" => Object::Reference(page_tree_id),
-        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
-        "CropBox" => vec![36.into(), 48.into(), 576.into(), 744.into()],
-    });
-    doc.set_object(
-        page_tree_id,
-        dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![Object::Reference(page_id)],
-            "Count" => 1,
-        },
+    // MediaBox 612x792 at the origin; CropBox inset by (36, 48) -> 540x696 at (36, 48).
+    let (mut fixture, out) = fixture_pdf();
+    let page_id = fixture.page_ids[0];
+    fixture.doc.get_dictionary_mut(page_id).unwrap().set(
+        "CropBox",
+        vec![36.into(), 48.into(), 576.into(), 744.into()],
     );
-    let catalog_id = doc.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => Object::Reference(page_tree_id),
-    });
-    doc.trailer.set("Root", Object::Reference(catalog_id));
     let input = TempFile::new("cropped");
-    let out = TempFile::new("cropped-out");
-    doc.save(input.path()).unwrap();
-    // Go through `open` so the effective box is derived from the file.
+    fixture.doc.save(input.path()).unwrap();
     let mut pdf = PdfDoc::open(input.path()).unwrap();
     assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
     let mut overlays = OverlayState::default();
@@ -207,10 +180,7 @@ fn cropped_pages_bake_text_at_previewed_position() {
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     let content = pdf.doc.get_page_content(page_id).unwrap();
     let tm = tm_operands(&content);
-    // Baseline: x = 36 + 72, y = 744 - 72 - 0.8 * 12 = 662.4. The old
-    // MediaBox-derived box would give (72, 710.4) instead.
     let expected = [1.0, 0.0, 0.0, 1.0, 108.0, 662.4];
-    assert_eq!(tm.len(), expected.len());
     for (actual, want) in tm.iter().zip(expected) {
         assert!((actual - want).abs() < 0.001, "cropped Tm: {tm:?}");
     }
@@ -218,11 +188,9 @@ fn cropped_pages_bake_text_at_previewed_position() {
 }
 
 fn render_first_page_rgba(path: &Path) -> Vec<u8> {
-    let bytes = std::fs::read(path).unwrap();
-    let pdf = hayro::hayro_syntax::Pdf::new(bytes).unwrap();
-    let page = &pdf.pages()[0];
+    let pdf = hayro::hayro_syntax::Pdf::new(std::fs::read(path).unwrap()).unwrap();
     let pix = hayro::render(
-        page,
+        &pdf.pages()[0],
         &hayro::RenderCache::new(),
         &hayro::hayro_interpret::InterpreterSettings::default(),
         &hayro::RenderSettings::default(),
@@ -237,12 +205,6 @@ fn render_first_page_rgba(path: &Path) -> Vec<u8> {
 
 #[test]
 fn bake_wraps_existing_content_in_q_q_to_isolate_graphics_and_text_state() {
-    // Existing page content leaves a flipped CTM (`cm`), a 1x1pt
-    // clipping rectangle at the origin (`re W n`), and invisible /
-    // distorted text state (`3 Tr`, `Tc`, `Tw`, `Tz`, `Ts`). Wrapping
-    // the original stream in `q` ... `Q` before the overlay stream
-    // resets all of those so the baked text renders identically to a
-    // clean page.
     let (mut clean_pdf, clean_out) = fixture_pdf();
     let mut clean_overlays = OverlayState::default();
     let clean_idx = clean_overlays.add(0, 72.0, 72.0, BoxKind::Text);
@@ -251,58 +213,39 @@ fn bake_wraps_existing_content_in_q_q_to_isolate_graphics_and_text_state() {
         .bake_and_save(&mut clean_overlays, clean_out.path())
         .unwrap();
     let clean_rgba = render_first_page_rgba(clean_out.path());
-    assert!(
-        clean_rgba.iter().any(|&b| b != 255),
-        "clean page rendered no ink"
-    );
+    assert!(clean_rgba.iter().any(|&b| b != 255));
 
     let (mut dirty_fixture, _unused) = fixture_pdf();
     let page_id = dirty_fixture.page_ids[0];
     let dirty_ops =
         b"0.75 0 0 -0.75 0 841.92 cm\n0 0 1 1 re W n\nBT 3 Tr 50 Tc 50 Tw 10 Tz 40 Ts ET";
-    let orig_stream_id = dirty_fixture
+    let orig_id = dirty_fixture
         .doc
         .add_object(Stream::new(Dictionary::new(), dirty_ops.to_vec()));
     dirty_fixture
         .doc
         .get_dictionary_mut(page_id)
         .unwrap()
-        .set("Contents", Object::Reference(orig_stream_id));
+        .set("Contents", Object::Reference(orig_id));
     let input = TempFile::new("dirty-state");
     let out = TempFile::new("dirty-state-out");
     dirty_fixture.doc.save(input.path()).unwrap();
     let mut pdf = PdfDoc::open(input.path()).unwrap();
-    let page_id = pdf.page_ids[0];
 
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
 
-    // Existing stream is bracketed by `q` and `Q` before the overlay stream.
     let content_ids = pdf.doc.get_page_contents(page_id);
     assert_eq!(content_ids.len(), 4);
-    assert_eq!(content_ids[1], orig_stream_id);
-    let first_ops = Content::decode(
-        &pdf.doc
-            .get_object(content_ids[0])
-            .and_then(Object::as_stream)
-            .unwrap()
-            .content,
-    )
-    .unwrap();
-    assert_eq!(first_ops.operations.len(), 1);
-    assert_eq!(first_ops.operations[0].operator, "q");
-    let restore_ops = Content::decode(
-        &pdf.doc
-            .get_object(content_ids[2])
-            .and_then(Object::as_stream)
-            .unwrap()
-            .content,
-    )
-    .unwrap();
-    assert_eq!(restore_ops.operations.len(), 1);
-    assert_eq!(restore_ops.operations[0].operator, "Q");
+    assert_eq!(content_ids[1], orig_id);
+    let stream_ops = |id| {
+        let s = pdf.doc.get_object(id).and_then(Object::as_stream).unwrap();
+        Content::decode(&s.content).unwrap().operations
+    };
+    assert_eq!(stream_ops(content_ids[0])[0].operator, "q");
+    assert_eq!(stream_ops(content_ids[2])[0].operator, "Q");
     assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
     assert_eq!(render_first_page_rgba(out.path()), clean_rgba);
 }
@@ -325,28 +268,25 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, TempFile) {
     doc.set_object(
         page_tree_id,
         dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![Object::Reference(page_id)],
-            "Count" => 1,
+            "Type" => "Pages", "Kids" => vec![Object::Reference(page_id)], "Count" => 1,
         },
     );
     let catalog_id = doc.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => Object::Reference(page_tree_id),
+        "Type" => "Catalog", "Pages" => Object::Reference(page_tree_id),
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
     let out = TempFile::new(&format!("fixture-{rotate}"));
     let rotate = rotate.rem_euclid(360);
-    let swapped = matches!(rotate, 90 | 270);
+    let size = if matches!(rotate, 90 | 270) {
+        (792.0, 612.0)
+    } else {
+        (612.0, 792.0)
+    };
     let pdf = PdfDoc {
         bytes: Arc::new(Vec::new()),
         doc,
         page_ids: vec![page_id],
-        sizes_pt: vec![if swapped {
-            (792.0, 612.0)
-        } else {
-            (612.0, 792.0)
-        }],
+        sizes_pt: vec![size],
         boxes_pt: vec![(0.0, 0.0, 612.0, 792.0)],
         rotations: vec![rotate],
     };
@@ -364,7 +304,6 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
     assert!(overlays.items.is_empty());
     assert!(!overlays.dirty);
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
-    // Second save: drained, so zero new content streams.
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     let text = pdf.doc.extract_text(&[1]).unwrap();
@@ -378,27 +317,17 @@ fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
-    // Saving into a missing directory fails after the bake has staged
-    // its content stream and font objects.
-    // A path under a temp-file path (not a directory): saving
-    // fails after the bake has staged its content stream/fonts.
     let missing_dir = TempFile::new("missing");
     let bad_out = missing_dir.path().join("out.pdf");
     assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
-    // Neither the document nor the overlays were mutated by the failure.
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 0);
     assert_eq!(overlays.items.len(), 1);
     assert!(overlays.dirty);
-    // Retry against a writable path bakes the text exactly once.
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert!(overlays.items.is_empty());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     let text = pdf.doc.extract_text(&[1]).unwrap();
-    assert_eq!(
-        text.matches("Hello").count(),
-        1,
-        "text baked more than once: {text:?}"
-    );
+    assert_eq!(text.matches("Hello").count(), 1, "baked >1x: {text:?}");
 }
 
 #[test]
@@ -475,27 +404,15 @@ fn in_place_save_replaces_file_without_temp_litter() {
 
 #[test]
 fn open_without_media_or_crop_box_is_an_error() {
-    let mut doc = Document::new();
-    let page_tree_id = doc.new_object_id();
-    let page_id = doc.add_object(dictionary! {
-        "Type" => "Page",
-        "Parent" => Object::Reference(page_tree_id),
-    });
-    doc.set_object(
-        page_tree_id,
-        dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![Object::Reference(page_id)],
-            "Count" => 1,
-        },
-    );
-    let catalog_id = doc.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => Object::Reference(page_tree_id),
-    });
-    doc.trailer.set("Root", Object::Reference(catalog_id));
+    let (mut fixture, _out) = fixture_pdf();
+    let page_id = fixture.page_ids[0];
+    fixture
+        .doc
+        .get_dictionary_mut(page_id)
+        .unwrap()
+        .remove(b"MediaBox");
     let input = TempFile::new("no-mediabox");
-    doc.save(input.path()).unwrap();
+    fixture.doc.save(input.path()).unwrap();
     let Err(err) = PdfDoc::open(input.path()) else {
         panic!("page without MediaBox/CropBox must not open");
     };
@@ -509,23 +426,19 @@ fn open_without_media_or_crop_box_is_an_error() {
 fn existing_ftw_alias_is_not_overwritten() {
     let (mut pdf, _out) = fixture_pdf();
     let page_id = pdf.page_ids[0];
-    // Pre-existing F_TW pointing at a non-Helvetica font.
     let times_id = pdf.doc.add_object(dictionary! {
         "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Times-Roman",
     });
-    let mut font = Dictionary::new();
-    font.set("F_TW", Object::Reference(times_id));
-    let mut resources = Dictionary::new();
-    resources.set("Font", font);
-    pdf.doc
-        .get_dictionary_mut(page_id)
-        .unwrap()
-        .set("Resources", resources);
-    let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
-    assert_eq!(alias, "F_TW1");
+    pdf.doc.get_dictionary_mut(page_id).unwrap().set(
+        "Resources",
+        dictionary! { "Font" => dictionary! { "F_TW" => Object::Reference(times_id) } },
+    );
+    assert_eq!(
+        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        "F_TW1"
+    );
     let fonts = pdf.doc.get_page_fonts(page_id).unwrap();
     assert!(fonts.contains_key(b"F_TW1".as_slice()));
-    // Existing Helvetica is reused on the second call.
     assert_eq!(
         PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
         "F_TW1"
@@ -536,52 +449,48 @@ fn existing_ftw_alias_is_not_overwritten() {
 fn non_standard_helvetica_on_page_is_not_reused() {
     let (mut pdf, _out) = fixture_pdf();
     let page_id = pdf.page_ids[0];
-    // StandardEncoding (no /Encoding), TrueType subtype, custom /Widths,
-    // and embedded FontFile* must all be rejected in favor of a fresh F_TW.
-    let std_enc = pdf.doc.add_object(dictionary! {
-        "Type" => "Font",
-        "Subtype" => "Type1",
-        "BaseFont" => "Helvetica",
-    });
-    let truetype = pdf.doc.add_object(dictionary! {
-        "Type" => "Font",
-        "Subtype" => "TrueType",
-        "BaseFont" => "Helvetica",
-        "Encoding" => "WinAnsiEncoding",
-    });
-    let custom_widths = pdf.doc.add_object(dictionary! {
-        "Type" => "Font",
-        "Subtype" => "Type1",
-        "BaseFont" => "Helvetica",
-        "Encoding" => "WinAnsiEncoding",
-        "Widths" => vec![Object::Integer(500)],
-    });
     let embedded_desc = pdf.doc.add_object(dictionary! {
-        "Type" => "FontDescriptor",
-        "FontFile2" => Object::Reference((999, 0)),
-    });
-    let embedded = pdf.doc.add_object(dictionary! {
-        "Type" => "Font",
-        "Subtype" => "Type1",
-        "BaseFont" => "Helvetica",
-        "Encoding" => "WinAnsiEncoding",
-        "FontDescriptor" => Object::Reference(embedded_desc),
+        "Type" => "FontDescriptor", "FontFile2" => Object::Reference((999, 0)),
     });
     let mut font = Dictionary::new();
-    font.set("F1", Object::Reference(std_enc));
-    font.set("F2", Object::Reference(truetype));
-    font.set("F3", Object::Reference(custom_widths));
-    font.set("F4", Object::Reference(embedded));
-    let mut resources = Dictionary::new();
-    resources.set("Font", font);
+    for (name, dict) in [
+        (
+            "F1",
+            dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica" },
+        ),
+        (
+            "F2",
+            dictionary! {
+                "Type" => "Font", "Subtype" => "TrueType",
+                "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
+            },
+        ),
+        (
+            "F3",
+            dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+                "Encoding" => "WinAnsiEncoding", "Widths" => vec![Object::Integer(500)],
+            },
+        ),
+        (
+            "F4",
+            dictionary! {
+                "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+                "Encoding" => "WinAnsiEncoding", "FontDescriptor" => Object::Reference(embedded_desc),
+            },
+        ),
+    ] {
+        font.set(name, Object::Reference(pdf.doc.add_object(dict)));
+    }
     pdf.doc
         .get_dictionary_mut(page_id)
         .unwrap()
-        .set("Resources", resources);
+        .set("Resources", dictionary! { "Font" => font });
 
-    let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
-    assert_eq!(alias, "F_TW");
-    // Now F_TW is a valid standard WinAnsi Type1 Helvetica and is reused.
+    assert_eq!(
+        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        "F_TW"
+    );
     assert_eq!(
         PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
         "F_TW"
