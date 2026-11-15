@@ -341,3 +341,75 @@ fn copy_then_paste_lands_on_current_page_and_cut_clears_source() {
     assert_eq!(app.overlays.items.len(), 1);
     assert_eq!(app.overlays.items[0].page, 1);
 }
+
+#[test]
+fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
+    use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Vec2};
+
+    let mut app = test_app();
+    let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
+    {
+        let item = app.overlays.item_mut(id).unwrap();
+        item.text = "Hello".to_string();
+        item.width_pt = Some(80.0);
+    }
+
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
+    let ctx = Context::default();
+    let run = |app: &mut TypewriterApp, events: Vec<Event>| {
+        let _ = ctx.run(
+            RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..RawInput::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let page_resp = ui.allocate_rect(screen, Sense::click_and_drag());
+                    app.draw_boxes(ui, screen, 0, 1.0, &page_resp);
+                });
+            },
+        );
+    };
+
+    // Frame 0: register box and handle rects.
+    // Box rect is [100, 180] x [100, 114.4]; 16x16 handle at (180, 114.4)
+    // has inner quadrant [172, 180] x [106.4, 114.4] overlapping the box.
+    run(&mut app, Vec::new());
+
+    let inner_quadrant = Pos2::new(176.0, 110.0);
+    let dragged_to = Pos2::new(226.0, 130.0);
+    run(&mut app, vec![Event::PointerMoved(inner_quadrant)]);
+    run(
+        &mut app,
+        vec![Event::PointerButton {
+            pos: inner_quadrant,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    run(&mut app, vec![Event::PointerMoved(dragged_to)]);
+    run(
+        &mut app,
+        vec![Event::PointerButton {
+            pos: dragged_to,
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+
+    let item = app.overlays.item(id).unwrap();
+    assert!(
+        (item.x_pt - 100.0).abs() <= f32::EPSILON && (item.y_top_pt - 100.0).abs() <= f32::EPSILON,
+        "dragging inner quadrant of resize handle must not move box, got ({}, {})",
+        item.x_pt,
+        item.y_top_pt
+    );
+    assert!(
+        (item.width_pt.unwrap() - 130.0).abs() <= f32::EPSILON,
+        "dragging inner quadrant of resize handle by +50pt must widen box from 80 to 130, got {:?}",
+        item.width_pt
+    );
+}

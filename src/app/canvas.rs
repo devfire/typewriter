@@ -231,7 +231,7 @@ impl TypewriterApp {
     }
 
     #[allow(clippy::cast_precision_loss)]
-    fn draw_boxes(
+    pub(super) fn draw_boxes(
         &mut self,
         ui: &mut egui::Ui,
         page_rect: egui::Rect,
@@ -282,16 +282,16 @@ impl TypewriterApp {
             );
             box_rects.push(rect);
             let selected = self.overlays.selected == Some(idx);
-            let handle_rect =
-                egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0));
-            if selected {
-                self.resize_handle(ui, idx, handle_rect, width_pt, zoom);
-            }
             let resp = ui.interact(
                 rect,
                 ui.id().with(("tw-box", idx)),
                 egui::Sense::click_and_drag(),
             );
+            let handle_rect =
+                egui::Rect::from_center_size(rect.right_bottom(), egui::vec2(16.0, 16.0));
+            if selected {
+                self.resize_handle(ui, idx, handle_rect, width_pt, zoom);
+            }
             if resp.clicked() {
                 self.overlays.selected = Some(idx);
             }
