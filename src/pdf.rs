@@ -224,16 +224,20 @@ impl PdfDoc {
         result
     }
 
-    /// Return the resource alias of a usable Helvetica on `page_id`,
-    /// adding a standard-14 Helvetica if the page has none.
+    /// Return the resource alias of a usable standard-14 `WinAnsi`
+    /// Helvetica on `page_id`, adding a fresh one if the page has none.
+    ///
+    /// A pre-existing `/Helvetica` is reused only when it is a
+    /// `/Subtype /Type1` font with direct `/Encoding /WinAnsiEncoding`,
+    /// no `/Widths`, and no embedded `/FontFile*` in its descriptor;
+    /// otherwise `WinAnsi` bytes or standard AFM widths would disagree
+    /// with the page font.
     fn ensure_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<String> {
         let fonts = doc
             .get_page_fonts(page_id)
             .context("failed to read page fonts")?;
         for (name, font) in &fonts {
-            if let Ok(base) = font.get(b"BaseFont")
-                && base.as_name().is_ok_and(|n| n == b"Helvetica")
-            {
+            if is_standard_winansi_helvetica(doc, font) {
                 return Ok(String::from_utf8_lossy(name).into_owned());
             }
         }
@@ -290,6 +294,36 @@ impl PdfDoc {
         insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
         Ok(alias)
     }
+}
+
+/// Whether `font` is an unmodified standard-14 Type1 Helvetica using
+/// `WinAnsiEncoding` with no custom `/Widths` or embedded font program.
+fn is_standard_winansi_helvetica(doc: &Document, font: &Dictionary) -> bool {
+    let is_name = |key: &[u8], expected: &[u8]| {
+        font.get(key)
+            .ok()
+            .and_then(|obj| obj.as_name().ok())
+            .is_some_and(|n| n == expected)
+    };
+    if !is_name(b"BaseFont", b"Helvetica")
+        || !is_name(b"Subtype", b"Type1")
+        || !is_name(b"Encoding", b"WinAnsiEncoding")
+        || font.has(b"Widths")
+        || font.has(b"FontFile")
+        || font.has(b"FontFile2")
+        || font.has(b"FontFile3")
+    {
+        return false;
+    }
+    if let Ok(desc_obj) = font.get(b"FontDescriptor") {
+        let Some(Object::Dictionary(desc)) = resolve(doc, desc_obj) else {
+            return false;
+        };
+        if desc.has(b"FontFile") || desc.has(b"FontFile2") || desc.has(b"FontFile3") {
+            return false;
+        }
+    }
+    true
 }
 
 /// `base` if free on the page, else `base1`, `base2`, ...

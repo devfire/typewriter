@@ -506,3 +506,59 @@ fn existing_ftw_alias_is_not_overwritten() {
         "F_TW1"
     );
 }
+
+#[test]
+fn non_standard_helvetica_on_page_is_not_reused() {
+    let (mut pdf, _out) = fixture_pdf();
+    let page_id = pdf.page_ids[0];
+    // StandardEncoding (no /Encoding), TrueType subtype, custom /Widths,
+    // and embedded FontFile* must all be rejected in favor of a fresh F_TW.
+    let std_enc = pdf.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+    });
+    let truetype = pdf.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "TrueType",
+        "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let custom_widths = pdf.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+        "Widths" => vec![Object::Integer(500)],
+    });
+    let embedded_desc = pdf.doc.add_object(dictionary! {
+        "Type" => "FontDescriptor",
+        "FontFile2" => Object::Reference((999, 0)),
+    });
+    let embedded = pdf.doc.add_object(dictionary! {
+        "Type" => "Font",
+        "Subtype" => "Type1",
+        "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+        "FontDescriptor" => Object::Reference(embedded_desc),
+    });
+    let mut font = Dictionary::new();
+    font.set("F1", Object::Reference(std_enc));
+    font.set("F2", Object::Reference(truetype));
+    font.set("F3", Object::Reference(custom_widths));
+    font.set("F4", Object::Reference(embedded));
+    let mut resources = Dictionary::new();
+    resources.set("Font", font);
+    pdf.doc
+        .get_dictionary_mut(page_id)
+        .unwrap()
+        .set("Resources", resources);
+
+    let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
+    assert_eq!(alias, "F_TW");
+    // Now F_TW is a valid standard WinAnsi Type1 Helvetica and is reused.
+    assert_eq!(
+        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        "F_TW"
+    );
+}
