@@ -1,4 +1,4 @@
-//! Command-line parsing: `pdf-editor [OPTIONS] [PDF]`.
+//! Command-line parsing: `typewriter [OPTIONS] [PDF]`.
 //!
 //! Hand-rolled (no parser dependency): the surface is one optional
 //! positional path plus `--help`/`--version`. Anything else is an
@@ -12,18 +12,20 @@ use std::path::PathBuf;
 mod tests;
 
 /// Usage printed by `--help` and after argument errors.
-pub const USAGE: &str = "\
-Typewriter PDF — annotate a PDF with typed text and signatures
-
-Usage: pdf-editor [OPTIONS] [PDF]
-
-Arguments:
-  [PDF]  PDF file to open on startup
-
-Options:
-  -h, --help     Print this help and exit
-  -V, --version  Print the version and exit
-";
+pub const USAGE: &str = concat!(
+    "Typewriter PDF — annotate a PDF with typed text and signatures\n\
+\n\
+Usage: ",
+    env!("CARGO_PKG_NAME"),
+    " [OPTIONS] [PDF]\n\
+\n\
+Arguments:\n\
+  [PDF]  PDF file to open on startup\n\
+\n\
+Options:\n\
+  -h, --help     Print this help and exit\n\
+  -V, --version  Print the version and exit\n"
+);
 
 /// What `main` should do after parsing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +41,7 @@ pub enum Cli {
 /// Parse arguments excluding the program name.
 ///
 /// `--` ends option parsing, so a path starting with `-` can still
-/// be opened (`pdf-editor -- -draft.pdf`). Non-UTF-8 paths are kept
+/// be opened (`typewriter -- -draft.pdf`). Non-UTF-8 paths are kept
 /// as-is via [`OsString`]; only ASCII flags are interpreted.
 ///
 /// # Errors

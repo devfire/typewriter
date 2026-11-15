@@ -1,9 +1,11 @@
-//! PDF document model and append-only overlay writer.
+//! PDF document model and overlay writer.
 //!
-//! Original page content is never decoded or rewritten: baked text is
-//! appended as a new content stream per page via lopdf's
-//! `add_to_page_content`. Existing Helvetica fonts are reused; a new
-//! standard-14 Helvetica is added only when the page has none.
+//! Original page content streams are left intact and bracketed in
+//! `q`/`Q` streams so baked text and signatures (appended in a new
+//! content stream per page) start in the default graphics state, and
+//! the updated document is written out via lopdf. Existing usable
+//! Helvetica fonts are reused; a new standard-14 Helvetica or embedded
+//! signature font is added only when needed.
 
 use crate::overlay::{BoxKind, LEADING, OverlayState, OverlayText, text_matrix, wrap_lines};
 use anyhow::{Context, Result, bail};

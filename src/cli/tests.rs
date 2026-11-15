@@ -1,9 +1,20 @@
-use super::{Cli, parse};
+use super::{Cli, USAGE, parse};
 use std::ffi::OsString;
 use std::path::PathBuf;
 
 fn args(argv: &[&str]) -> Vec<OsString> {
     argv.iter().map(OsString::from).collect()
+}
+
+#[test]
+fn usage_names_current_package() {
+    assert!(
+        USAGE.contains(&format!(
+            "Usage: {} [OPTIONS] [PDF]",
+            env!("CARGO_PKG_NAME")
+        )),
+        "unexpected USAGE: {USAGE}"
+    );
 }
 
 #[test]

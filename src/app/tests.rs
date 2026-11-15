@@ -225,7 +225,7 @@ fn failed_reload_after_save_is_surfaced_not_masked_by_saved() {
     app.zoom = 1.7;
     let missing = path
         .path()
-        .with_file_name("pdf-editor-app-test-no-such-file.pdf");
+        .with_file_name("typewriter-app-test-no-such-file.pdf");
     app.reload_after_save(&missing);
     assert!(
         app.status.contains("reload failed"),

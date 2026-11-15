@@ -8,7 +8,9 @@
 use super::widgets::{
     big_button, box_width_control, group, hint_card, icon_button, mode_button, pill, primary_button,
 };
-use super::{ACCENT, BTN_H, DANGER, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, SaveMode, TypewriterApp};
+use super::{
+    ACCENT, BTN_H, DANGER, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, SaveMode, TypewriterApp, box_label,
+};
 use crate::overlay::{BoxId, BoxKind, OverlayText};
 use eframe::egui;
 
@@ -341,7 +343,7 @@ impl TypewriterApp {
                         .corner_radius(RADIUS);
                     if ui
                         .add(del_btn)
-                        .on_hover_text("Delete this text box")
+                        .on_hover_text(format!("Delete this {}", box_label(item.kind)))
                         .clicked()
                     {
                         *remove = Some(item.id);

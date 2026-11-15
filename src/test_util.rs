@@ -25,7 +25,8 @@ impl TempFile {
             .map_or(0, |d| d.as_nanos());
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "pdf-editor-test-{}-{nanos}-{seq}-{tag}.pdf",
+            "{}-test-{}-{nanos}-{seq}-{tag}.pdf",
+            env!("CARGO_PKG_NAME"),
             std::process::id()
         ));
         Self { path }
