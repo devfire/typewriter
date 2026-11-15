@@ -412,17 +412,6 @@ fn append_overlay_stream(
     Ok(())
 }
 
-#[cfg(test)]
-fn hayro_page_sizes(bytes: &Arc<Vec<u8>>) -> Vec<(f32, f32)> {
-    let Ok(pdf) = hayro::hayro_syntax::Pdf::new(Arc::clone(bytes)) else {
-        return Vec::new();
-    };
-    pdf.pages()
-        .iter()
-        .map(hayro::hayro_syntax::page::Page::render_dimensions)
-        .collect()
-}
-
 fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
     match obj {
         Object::Reference(id) => doc.get_object(*id).ok(),

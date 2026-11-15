@@ -23,13 +23,6 @@ pub struct PageRenderer {
 }
 
 impl PageRenderer {
-    /// Display size (points * zoom) of `page_idx`, rotation/crop aware.
-    pub fn page_points(pdf: &Pdf, page_idx: usize) -> Option<(f32, f32)> {
-        pdf.pages()
-            .get(page_idx)
-            .map(hayro::hayro_syntax::page::Page::render_dimensions)
-    }
-
     /// Render (or return the cached) texture for a page.
     ///
     /// The pixmap background is opaque white, which is load-bearing:

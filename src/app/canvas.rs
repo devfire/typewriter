@@ -2,7 +2,6 @@
 
 use super::{ACCENT, MAX_ZOOM, MIN_ZOOM, Mode, RADIUS, TypewriterApp, typewriter_icon};
 use crate::overlay::{self, BoxId};
-use crate::render::PageRenderer;
 use eframe::egui;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -99,9 +98,7 @@ impl TypewriterApp {
             return;
         };
         let page = self.page.min(doc.page_count().saturating_sub(1));
-        let (dim_w, dim_h) = PageRenderer::page_points(pdf, page)
-            .or_else(|| doc.sizes_pt.get(page).copied())
-            .unwrap_or((612.0, 792.0));
+        let (dim_w, dim_h) = doc.sizes_pt.get(page).copied().unwrap_or((612.0, 792.0));
         if self.fit_pending {
             let avail = ui.available_size();
             if dim_w > 0.0 && dim_h > 0.0 && avail.x > 0.0 && avail.y > 0.0 {

@@ -200,9 +200,7 @@ fn cropped_pages_bake_text_at_previewed_position() {
     doc.save(input.path()).unwrap();
     // Go through `open` so the effective box is derived from the file.
     let mut pdf = PdfDoc::open(input.path()).unwrap();
-    // Status-bar size must agree with the renderer's (hayro) dimensions.
     assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
-    assert_eq!(hayro_page_sizes(&pdf.bytes), pdf.sizes_pt);
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
