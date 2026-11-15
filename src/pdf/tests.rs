@@ -219,73 +219,94 @@ fn cropped_pages_bake_text_at_previewed_position() {
     assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
 }
 
-#[test]
-fn bake_inverts_a_dirty_residual_ctm() {
-    // A page whose content leaves a bare `cm` in effect (as some
-    // generators emit): the overlay stream must prepend its inverse,
-    // or the next save's text is drawn through it and renders
-    // upside down.
-    let mut doc = Document::new();
-    let page_tree_id = doc.new_object_id();
-    let page_id = doc.add_object(dictionary! {
-        "Type" => "Page",
-        "Parent" => Object::Reference(page_tree_id),
-        "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
-    });
-    doc.set_object(
-        page_tree_id,
-        dictionary! {
-            "Type" => "Pages",
-            "Kids" => vec![Object::Reference(page_id)],
-            "Count" => 1,
+fn render_first_page_rgba(path: &Path) -> Vec<u8> {
+    let bytes = std::fs::read(path).unwrap();
+    let pdf = hayro::hayro_syntax::Pdf::new(bytes).unwrap();
+    let page = &pdf.pages()[0];
+    let pix = hayro::render(
+        page,
+        &hayro::RenderCache::new(),
+        &hayro::hayro_interpret::InterpreterSettings::default(),
+        &hayro::RenderSettings::default(),
+        &hayro::PixmapSettings {
+            x_scale: 1.0,
+            y_scale: 1.0,
+            bg_color: hayro::vello_cpu::color::palette::css::WHITE,
         },
     );
-    let catalog_id = doc.add_object(dictionary! {
-        "Type" => "Catalog",
-        "Pages" => Object::Reference(page_tree_id),
-    });
-    doc.trailer.set("Root", Object::Reference(catalog_id));
-    let dirty = [0.75, 0.0, 0.0, -0.75, 0.0, 841.92];
-    doc.add_to_page_content(
-        page_id,
-        Content {
-            operations: vec![Operation::new(
-                "cm",
-                dirty.into_iter().map(Object::Real).collect(),
-            )],
-        },
-    )
-    .unwrap();
-    let input = TempFile::new("dirty-ctm");
-    let out = TempFile::new("dirty-ctm-out");
-    doc.save(input.path()).unwrap();
+    pix.data_as_u8_slice().to_vec()
+}
+
+#[test]
+fn bake_wraps_existing_content_in_q_q_to_isolate_graphics_and_text_state() {
+    // Existing page content leaves a flipped CTM (`cm`), a 1x1pt
+    // clipping rectangle at the origin (`re W n`), and invisible /
+    // distorted text state (`3 Tr`, `Tc`, `Tw`, `Tz`, `Ts`). Wrapping
+    // the original stream in `q` ... `Q` before the overlay stream
+    // resets all of those so the baked text renders identically to a
+    // clean page.
+    let (mut clean_pdf, clean_out) = fixture_pdf();
+    let mut clean_overlays = OverlayState::default();
+    let clean_idx = clean_overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    clean_overlays.item_mut(clean_idx).unwrap().text = "Hello".to_string();
+    clean_pdf
+        .bake_and_save(&mut clean_overlays, clean_out.path())
+        .unwrap();
+    let clean_rgba = render_first_page_rgba(clean_out.path());
+    assert!(
+        clean_rgba.iter().any(|&b| b != 255),
+        "clean page rendered no ink"
+    );
+
+    let (mut dirty_fixture, _unused) = fixture_pdf();
+    let page_id = dirty_fixture.page_ids[0];
+    let dirty_ops =
+        b"0.75 0 0 -0.75 0 841.92 cm\n0 0 1 1 re W n\nBT 3 Tr 50 Tc 50 Tw 10 Tz 40 Ts ET";
+    let orig_stream_id = dirty_fixture
+        .doc
+        .add_object(Stream::new(Dictionary::new(), dirty_ops.to_vec()));
+    dirty_fixture
+        .doc
+        .get_dictionary_mut(page_id)
+        .unwrap()
+        .set("Contents", Object::Reference(orig_stream_id));
+    let input = TempFile::new("dirty-state");
+    let out = TempFile::new("dirty-state-out");
+    dirty_fixture.doc.save(input.path()).unwrap();
     let mut pdf = PdfDoc::open(input.path()).unwrap();
     let page_id = pdf.page_ids[0];
-    for (actual, want) in residual_ctm(&pdf.doc, page_id).iter().zip(dirty) {
-        assert!((actual - want).abs() < 0.001);
-    }
 
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
 
-    // The appended stream starts with the inverse of the dirty CTM.
+    // Existing stream is bracketed by `q` and `Q` before the overlay stream.
     let content_ids = pdf.doc.get_page_contents(page_id);
-    let appended = content_ids.last().unwrap();
-    let stream = pdf
-        .doc
-        .get_object(*appended)
-        .and_then(Object::as_stream)
-        .unwrap();
-    let ops = Content::decode(&stream.content).unwrap();
-    assert_eq!(ops.operations[0].operator.as_str(), "cm");
-    let inv = invert_ctm(dirty).unwrap();
-    for (actual, want) in ops.operations[0].operands.iter().zip(inv) {
-        assert!((actual.as_float().unwrap() - want).abs() < 0.001);
-    }
-    // And the text is still recoverable.
+    assert_eq!(content_ids.len(), 4);
+    assert_eq!(content_ids[1], orig_stream_id);
+    let first_ops = Content::decode(
+        &pdf.doc
+            .get_object(content_ids[0])
+            .and_then(Object::as_stream)
+            .unwrap()
+            .content,
+    )
+    .unwrap();
+    assert_eq!(first_ops.operations.len(), 1);
+    assert_eq!(first_ops.operations[0].operator, "q");
+    let restore_ops = Content::decode(
+        &pdf.doc
+            .get_object(content_ids[2])
+            .and_then(Object::as_stream)
+            .unwrap()
+            .content,
+    )
+    .unwrap();
+    assert_eq!(restore_ops.operations.len(), 1);
+    assert_eq!(restore_ops.operations[0].operator, "Q");
     assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
+    assert_eq!(render_first_page_rgba(out.path()), clean_rgba);
 }
 
 /// Build a minimal one-page `PdfDoc` in memory.
