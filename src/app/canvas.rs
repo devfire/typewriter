@@ -442,34 +442,53 @@ fn paint_box_text(args: &PaintBoxText<'_>) {
         kind,
         text_is_empty,
     } = *args;
+    let first_baseline_y = rect.min.y + (pad_top_pt + overlay::ASCENT * size_pt) * zoom;
     for (line_idx, line) in display_lines.iter().enumerate() {
         #[allow(clippy::cast_precision_loss)]
-        let y = rect.min.y
-            + (pad_top_pt + overlay::ASCENT * size_pt) * zoom
-            + (line_idx as f32) * overlay::LEADING * size_pt * zoom;
-        painter.text(
-            egui::pos2(rect.min.x, y),
-            egui::Align2::LEFT_BOTTOM,
+        let baseline_y = first_baseline_y + (line_idx as f32) * overlay::LEADING * size_pt * zoom;
+        paint_line_at_baseline(
+            painter,
+            egui::pos2(rect.min.x, baseline_y),
             line,
-            font.clone(),
+            font,
             color,
         );
     }
     if text_is_empty && selected {
-        painter.text(
-            egui::pos2(
-                rect.min.x,
-                rect.min.y + (pad_top_pt + overlay::ASCENT * size_pt) * zoom,
-            ),
-            egui::Align2::LEFT_BOTTOM,
-            match kind {
-                crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
-                crate::overlay::BoxKind::Text => "Type here\u{2026}",
-            },
-            font.clone(),
+        let placeholder = match kind {
+            crate::overlay::BoxKind::Signature => "Sign here\u{2026}",
+            crate::overlay::BoxKind::Text => "Type here\u{2026}",
+        };
+        paint_line_at_baseline(
+            painter,
+            egui::pos2(rect.min.x, first_baseline_y),
+            placeholder,
+            font,
             egui::Color32::GRAY,
         );
     }
+}
+
+/// Lay out `text` as a single unwrapped row and place its glyph baseline
+/// at `baseline_left.y` so the on-page preview shares the baked PDF's baseline.
+fn paint_line_at_baseline(
+    painter: &egui::Painter,
+    baseline_left: egui::Pos2,
+    text: &str,
+    font: &egui::FontId,
+    color: egui::Color32,
+) {
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
+    let baseline_offset = galley
+        .rows
+        .first()
+        .and_then(|row| row.glyphs.first())
+        .map_or_else(|| galley.size().y, |glyph| glyph.pos.y);
+    painter.galley(
+        egui::pos2(baseline_left.x, baseline_left.y - baseline_offset),
+        galley,
+        color,
+    );
 }
 
 /// On-page box width in points: widest line as actually rendered by

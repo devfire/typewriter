@@ -342,9 +342,56 @@ fn copy_then_paste_lands_on_current_page_and_cut_clears_source() {
     assert_eq!(app.overlays.items[0].page, 1);
 }
 
+fn run_canvas(
+    ctx: &egui::Context,
+    app: &mut TypewriterApp,
+    screen: egui::Rect,
+    zoom: f32,
+    events: Vec<egui::Event>,
+) -> egui::FullOutput {
+    ctx.run(
+        egui::RawInput {
+            screen_rect: Some(screen),
+            events,
+            ..egui::RawInput::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let page_resp = ui.allocate_rect(screen, egui::Sense::click_and_drag());
+                app.draw_boxes(ui, screen, 0, zoom, &page_resp);
+            });
+        },
+    )
+}
+
+fn drag_canvas(
+    ctx: &egui::Context,
+    app: &mut TypewriterApp,
+    screen: egui::Rect,
+    from: egui::Pos2,
+    to: egui::Pos2,
+) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let btn = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    for events in [
+        Vec::new(),
+        vec![Event::PointerMoved(from)],
+        vec![btn(from, true)],
+        vec![Event::PointerMoved(to)],
+        vec![btn(to, false)],
+    ] {
+        let _ = run_canvas(ctx, app, screen, 1.0, events);
+    }
+}
+
 #[test]
 fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
-    use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Vec2};
+    use eframe::egui::{Context, Pos2, Rect, Vec2};
 
     let mut app = test_app();
     let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
@@ -355,49 +402,12 @@ fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
     }
 
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
-    let ctx = Context::default();
-    let run = |app: &mut TypewriterApp, events: Vec<Event>| {
-        let _ = ctx.run(
-            RawInput {
-                screen_rect: Some(screen),
-                events,
-                ..RawInput::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let page_resp = ui.allocate_rect(screen, Sense::click_and_drag());
-                    app.draw_boxes(ui, screen, 0, 1.0, &page_resp);
-                });
-            },
-        );
-    };
-
-    // Frame 0: register box and handle rects.
-    // Box rect is [100, 180] x [100, 114.4]; 16x16 handle at (180, 114.4)
-    // has inner quadrant [172, 180] x [106.4, 114.4] overlapping the box.
-    run(&mut app, Vec::new());
-
-    let inner_quadrant = Pos2::new(176.0, 110.0);
-    let dragged_to = Pos2::new(226.0, 130.0);
-    run(&mut app, vec![Event::PointerMoved(inner_quadrant)]);
-    run(
+    drag_canvas(
+        &Context::default(),
         &mut app,
-        vec![Event::PointerButton {
-            pos: inner_quadrant,
-            button: PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }],
-    );
-    run(&mut app, vec![Event::PointerMoved(dragged_to)]);
-    run(
-        &mut app,
-        vec![Event::PointerButton {
-            pos: dragged_to,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }],
+        screen,
+        Pos2::new(176.0, 110.0),
+        Pos2::new(226.0, 130.0),
     );
 
     let item = app.overlays.item(id).unwrap();
@@ -416,7 +426,7 @@ fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
 
 #[test]
 fn dragging_box_clamps_to_page_bounds() {
-    use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Sense, Vec2};
+    use eframe::egui::{Context, Pos2, Rect, Vec2};
 
     let mut app = test_app();
     let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
@@ -427,47 +437,12 @@ fn dragging_box_clamps_to_page_bounds() {
     }
 
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
-    let ctx = Context::default();
-    let run = |app: &mut TypewriterApp, events: Vec<Event>| {
-        let _ = ctx.run(
-            RawInput {
-                screen_rect: Some(screen),
-                events,
-                ..RawInput::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let page_resp = ui.allocate_rect(screen, Sense::click_and_drag());
-                    app.draw_boxes(ui, screen, 0, 1.0, &page_resp);
-                });
-            },
-        );
-    };
-
-    // Frame 0: register box rect [100, 180] x [100, 114.4].
-    run(&mut app, Vec::new());
-
-    let start = Pos2::new(120.0, 105.0);
-    let far_right_bottom = Pos2::new(900.0, 1000.0);
-    run(&mut app, vec![Event::PointerMoved(start)]);
-    run(
+    drag_canvas(
+        &Context::default(),
         &mut app,
-        vec![Event::PointerButton {
-            pos: start,
-            button: PointerButton::Primary,
-            pressed: true,
-            modifiers: Modifiers::NONE,
-        }],
-    );
-    run(&mut app, vec![Event::PointerMoved(far_right_bottom)]);
-    run(
-        &mut app,
-        vec![Event::PointerButton {
-            pos: far_right_bottom,
-            button: PointerButton::Primary,
-            pressed: false,
-            modifiers: Modifiers::NONE,
-        }],
+        screen,
+        Pos2::new(120.0, 105.0),
+        Pos2::new(900.0, 1000.0),
     );
 
     let item = app.overlays.item(id).unwrap();
@@ -482,5 +457,63 @@ fn dragging_box_clamps_to_page_bounds() {
         (item.y_top_pt - max_top).abs() <= 1e-4,
         "y_top_pt should clamp to {max_top}, got {}",
         item.y_top_pt
+    );
+}
+
+#[test]
+fn preview_baseline_matches_baked_baseline() {
+    use eframe::egui::{Context, Pos2, Rect, Shape, Vec2};
+
+    let mut app = test_app();
+    let text_id = app.overlays.add(0, 72.0, 120.0, BoxKind::Text);
+    {
+        let item = app.overlays.item_mut(text_id).unwrap();
+        item.text = "First line\nSecond line".to_string();
+        item.size_pt = 18.0;
+    }
+    let sig_id = app.overlays.add(0, 72.0, 240.0, BoxKind::Signature);
+    app.overlays.item_mut(sig_id).unwrap().text = "Ada Lovelace".to_string();
+
+    let zoom = 1.5;
+    let page_h_pt = 792.0;
+    let screen = Rect::from_min_size(
+        Pos2::new(20.0, 30.0),
+        Vec2::new(612.0 * zoom, page_h_pt * zoom),
+    );
+    let ctx = Context::default();
+    super::theme::apply_theme(&ctx);
+    let output = run_canvas(&ctx, &mut app, screen, zoom, Vec::new());
+
+    let baseline_pdf_y = |line_text: &str| -> f32 {
+        let shape = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                Shape::Text(t) if t.galley.job.text == line_text => Some(t),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing painted text shape for {line_text:?}"));
+        let screen_baseline_y = shape.pos.y + shape.galley.rows[0].glyphs[0].pos.y;
+        let top_pt = (screen_baseline_y - screen.min.y) / zoom;
+        page_h_pt - top_pt
+    };
+
+    let text_item = app.overlays.item(text_id).unwrap();
+    let baked_text_y = crate::overlay::text_matrix(text_item, (0.0, 0.0, 612.0, page_h_pt), 0)[5];
+    assert!(
+        (baseline_pdf_y("First line") - baked_text_y).abs() <= 1e-3,
+        "line 0 preview baseline must match baked baseline"
+    );
+    let baked_line2_y = baked_text_y - crate::overlay::LEADING * text_item.size_pt;
+    assert!(
+        (baseline_pdf_y("Second line") - baked_line2_y).abs() <= 1e-3,
+        "line 1 preview baseline must match baked baseline"
+    );
+
+    let sig_item = app.overlays.item(sig_id).unwrap();
+    let baked_sig_y = crate::overlay::text_matrix(sig_item, (0.0, 0.0, 612.0, page_h_pt), 0)[5];
+    assert!(
+        (baseline_pdf_y("Ada Lovelace") - baked_sig_y).abs() <= 1e-3,
+        "signature preview baseline must match baked baseline"
     );
 }
