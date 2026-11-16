@@ -462,11 +462,13 @@ fn box_vertical_pad_pt(item: &OverlayText) -> (f32, f32) {
     }
 }
 
-/// Preview font for a box: Momo Signature for signatures, proportional else.
+/// Preview font for a box: Momo Signature for signatures,
+/// Helvetica-metric Liberation Sans for text (matching the baked
+/// Helvetica's glyph widths, not just the wrap measure).
 fn box_font(item: &OverlayText, zoom: f32) -> egui::FontId {
     match item.kind {
         BoxKind::Signature => crate::signature::font_id(item.size_pt * zoom),
-        BoxKind::Text => egui::FontId::proportional(item.size_pt * zoom),
+        BoxKind::Text => crate::text_font::font_id(item.size_pt * zoom),
     }
 }
 

@@ -77,6 +77,43 @@ fn preview_wrap_uses_helvetica_metrics_not_ui_font() {
 }
 
 #[test]
+fn text_preview_font_measures_like_helvetica() {
+    let ctx = egui::Context::default();
+    super::theme::apply_theme(&ctx);
+    let sentence = "The quick brown fox jumps over the lazy dog";
+    // Measure at 120 pt: egui rounds glyph advances to whole pixels,
+    // which at 12 pt would swamp the metric comparison.
+    let helvetica = crate::pdf::helvetica_width_pt(sentence, 120.0);
+    // Fonts only exist after a first run(); measure inside it.
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        let measure = |text: &str, font: egui::FontId| {
+            ctx.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap(text.to_string(), font, egui::Color32::WHITE)
+                    .size()
+                    .x
+            })
+        };
+        let preview = measure(sentence, crate::text_font::font_id(120.0));
+        assert!(
+            (preview - helvetica).abs() < 4.0,
+            "Liberation preview {preview} vs Helvetica {helvetica}"
+        );
+        // Guard against silently falling back to egui's default face:
+        // its `i` is ~12% wider than Helvetica's, Liberation's matches.
+        let narrow = "iiiiiiiiii";
+        let preview_i = measure(narrow, crate::text_font::font_id(120.0));
+        let helvetica_i = crate::pdf::helvetica_width_pt(narrow, 120.0);
+        assert!((preview_i - helvetica_i).abs() < 4.0);
+        let fallback_i = measure(narrow, egui::FontId::proportional(120.0));
+        assert!(
+            (fallback_i - helvetica_i).abs() > 20.0,
+            "fallback i {fallback_i} vs Helvetica {helvetica_i}"
+        );
+    });
+}
+
+#[test]
 fn sidebar_width_is_not_pushed_out_by_hint_text_when_resized_narrow() {
     use eframe::egui::{Context, Event, PointerButton, Pos2, RawInput, Rect, Vec2};
 
@@ -487,6 +524,9 @@ fn drag_canvas(
     to: egui::Pos2,
 ) {
     use eframe::egui::{Event, Modifiers, PointerButton};
+    // Canvas painting assumes the app theme's fonts are registered
+    // (as `TypewriterApp::new` does in production).
+    super::theme::apply_theme(ctx);
     let btn = |pos, pressed| Event::PointerButton {
         pos,
         button: PointerButton::Primary,

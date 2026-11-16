@@ -1,7 +1,7 @@
 //! Light/dark palettes, typography, and widget geometry.
 
 use super::{ACCENT, RADIUS};
-use crate::signature;
+use crate::{signature, text_font};
 use eframe::egui;
 use std::sync::Arc;
 
@@ -16,6 +16,17 @@ pub(super) fn apply_theme(ctx: &egui::Context) {
     fonts.families.insert(
         egui::FontFamily::Name(signature::FONT_FAMILY.into()),
         vec![signature::FONT_KEY.to_string()],
+    );
+    // Text-box preview face (Helvetica-metric Liberation Sans); the
+    // default proportional font stays as fallback for glyphs outside
+    // its coverage, mirroring egui's own Proportional family.
+    fonts.font_data.insert(
+        text_font::FONT_KEY.to_string(),
+        Arc::new(egui::FontData::from_static(text_font::FONT_BYTES)),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(text_font::FONT_FAMILY.into()),
+        vec![text_font::FONT_KEY.to_string(), "Ubuntu-Light".to_string()],
     );
     ctx.set_fonts(fonts);
     for (theme, dark) in [(egui::Theme::Light, false), (egui::Theme::Dark, true)] {

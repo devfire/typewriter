@@ -8,6 +8,7 @@ mod render;
 mod signature;
 #[cfg(test)]
 mod test_util;
+mod text_font;
 
 use eframe::egui;
 use std::process::ExitCode;
