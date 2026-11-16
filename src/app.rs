@@ -24,6 +24,18 @@ const BTN_H: f32 = 38.0;
 const RADIUS: u8 = 10;
 const MIN_ZOOM: f32 = 0.2;
 const MAX_ZOOM: f32 = 4.0;
+const SHORTCUT_OPEN: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::O);
+const SHORTCUT_SAVE: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::S);
+const SHORTCUT_COPY: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::C);
+const SHORTCUT_CUT: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::X);
+const SHORTCUT_PASTE: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V);
+const SHORTCUT_DUPLICATE: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::D);
 
 /// Last rendered canvas geometry and user-controlled scroll offset.
 /// Preserves the page's screen position when a panel resize moves the canvas.
@@ -323,19 +335,19 @@ impl TypewriterApp {
         }
         let (open, save, copy, cut, paste, duplicate, zoom_in, zoom_out, escape, delete) = ctx
             .input_mut(|i| {
-                let ctrl = i.modifiers.ctrl || i.modifiers.command;
                 (
-                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::O),
-                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::S),
-                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::C),
-                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::X),
-                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::V),
-                    ctrl && i.consume_key(egui::Modifiers::CTRL, egui::Key::D),
+                    i.consume_shortcut(&SHORTCUT_OPEN),
+                    i.consume_shortcut(&SHORTCUT_SAVE),
+                    i.consume_shortcut(&SHORTCUT_COPY),
+                    i.consume_shortcut(&SHORTCUT_CUT),
+                    i.consume_shortcut(&SHORTCUT_PASTE),
+                    i.consume_shortcut(&SHORTCUT_DUPLICATE),
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
                         || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
                 )
             });
         if open {
