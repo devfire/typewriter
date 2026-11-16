@@ -366,9 +366,11 @@ impl TypewriterApp {
         ui.horizontal(|ui| {
             if btn(ui, has_selection, "Copy", "Copy selected box  (Ctrl+C)") {
                 self.copy_selected();
+                self.seed_system_clipboard(ui.ctx());
             }
             if btn(ui, has_selection, "Cut", "Cut selected box  (Ctrl+X)") {
                 self.cut_selected();
+                self.seed_system_clipboard(ui.ctx());
             }
         });
         ui.add_space(6.0);

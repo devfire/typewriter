@@ -494,6 +494,46 @@ fn copy_then_paste_lands_on_current_page_and_cut_clears_source() {
     assert_eq!(app.overlays.items[0].page, 1);
 }
 
+#[test]
+fn copy_cut_paste_events_copy_cut_and_paste_box() {
+    use eframe::egui::{Context, Event, Pos2, RawInput, Rect, Vec2};
+
+    // Real eframe/egui-winit never delivers Ctrl/Cmd+C/X/V as
+    // `Event::Key`: it intercepts them and emits `Event::Copy`,
+    // `Event::Cut`, or `Event::Paste` instead. Simulate that wire
+    // format; `Event::Key` simulations cannot catch this regression.
+    let mut app = test_app();
+    let path = write_pdf(2);
+    assert!(app.load(path.path().to_path_buf()));
+    let id = app.overlays.add(0, 50.0, 60.0, BoxKind::Text);
+    app.overlays.item_mut(id).unwrap().text = "Ada".to_string();
+
+    let ctx = Context::default();
+    let run = |app: &mut TypewriterApp, events: Vec<Event>| {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+            events,
+            ..RawInput::default()
+        };
+        let _output = ctx.run(input, |ctx| app.handle_shortcuts(ctx));
+    };
+
+    run(&mut app, vec![Event::Copy]);
+    assert!(app.clipboard.is_some(), "Event::Copy must copy the box");
+
+    run(&mut app, vec![Event::Paste("Ada".to_string())]);
+    assert_eq!(
+        app.overlays.items.len(),
+        2,
+        "Event::Paste must paste the box"
+    );
+
+    // The pasted box is selected, so Cut removes it and re-seeds the clipboard.
+    run(&mut app, vec![Event::Cut]);
+    assert_eq!(app.overlays.items.len(), 1, "Event::Cut must cut the box");
+    assert!(app.clipboard.is_some());
+}
+
 fn run_canvas(
     ctx: &egui::Context,
     app: &mut TypewriterApp,

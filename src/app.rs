@@ -302,6 +302,23 @@ impl TypewriterApp {
         self.status = format!("{verb} {label}");
     }
 
+    /// Mirror the internal clipboard into the system clipboard.
+    /// egui-winit only emits `Event::Paste` on Ctrl/Cmd+V when the
+    /// system clipboard is non-empty, so without this a following
+    /// paste would deliver no event at all. The pasted text itself
+    /// is ignored (`paste_clipboard` uses the internal clipboard);
+    /// an empty box text is seeded with a blank so the event fires.
+    fn seed_system_clipboard(&self, ctx: &egui::Context) {
+        if let Some(item) = &self.clipboard {
+            let text = if item.text.is_empty() {
+                " ".to_string()
+            } else {
+                item.text.clone()
+            };
+            ctx.copy_text(text);
+        }
+    }
+
     /// Paste the clipboard box onto the current page, selecting it.
     /// No-op without a document or an empty clipboard. Repeated
     /// pastes cascade (see `OverlayState::paste`).
@@ -335,12 +352,34 @@ impl TypewriterApp {
         }
         let (open, save, copy, cut, paste, duplicate, zoom_in, zoom_out, escape, delete) = ctx
             .input_mut(|i| {
+                // eframe/egui-winit intercepts Ctrl/Cmd+C/X/V and emits
+                // `Event::Copy`/`Cut`/`Paste` instead of `Event::Key`, so
+                // `consume_shortcut` alone never sees them. Consume those
+                // events here (a focused text editor is guarded above and
+                // keeps its native handling). The `consume_shortcut` calls
+                // remain for backends that do deliver the key press.
+                let (mut copy_event, mut cut_event, mut paste_event) = (false, false, false);
+                i.events.retain(|event| match event {
+                    egui::Event::Copy => {
+                        copy_event = true;
+                        false
+                    }
+                    egui::Event::Cut => {
+                        cut_event = true;
+                        false
+                    }
+                    egui::Event::Paste(_) => {
+                        paste_event = true;
+                        false
+                    }
+                    _ => true,
+                });
                 (
                     i.consume_shortcut(&SHORTCUT_OPEN),
                     i.consume_shortcut(&SHORTCUT_SAVE),
-                    i.consume_shortcut(&SHORTCUT_COPY),
-                    i.consume_shortcut(&SHORTCUT_CUT),
-                    i.consume_shortcut(&SHORTCUT_PASTE),
+                    i.consume_shortcut(&SHORTCUT_COPY) || copy_event,
+                    i.consume_shortcut(&SHORTCUT_CUT) || cut_event,
+                    i.consume_shortcut(&SHORTCUT_PASTE) || paste_event,
                     i.consume_shortcut(&SHORTCUT_DUPLICATE),
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
                         || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
@@ -361,9 +400,11 @@ impl TypewriterApp {
         // there keep their native text-editing meaning.
         if copy {
             self.copy_selected();
+            self.seed_system_clipboard(ctx);
         }
         if cut {
             self.cut_selected();
+            self.seed_system_clipboard(ctx);
         }
         if paste {
             self.paste_clipboard();
