@@ -80,6 +80,10 @@ pub(super) enum PromptChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SaveMode {
     InPlace,
+    /// Overwrite the open file without the overwrite dialog: the
+    /// caller (the unsaved-changes prompt) already obtained the
+    /// user's explicit Save choice for this document.
+    InPlaceConfirmed,
     SaveAs,
 }
 
@@ -96,6 +100,13 @@ fn box_label(kind: BoxKind) -> &'static str {
         BoxKind::Text => "text box",
         BoxKind::Signature => "signature",
     }
+}
+
+/// Whether overwriting `target` in place still needs the
+/// confirmation dialog: only when the user has not already
+/// consented to overwriting that exact file.
+fn overwrite_needs_confirmation(confirmed_for: Option<&Path>, target: &Path) -> bool {
+    confirmed_for != Some(target)
 }
 
 pub struct TypewriterApp {
@@ -119,6 +130,13 @@ pub struct TypewriterApp {
     /// paste always lands on the current page.
     clipboard: Option<OverlayText>,
     close_state: CloseState,
+    /// File whose in-place overwrite the user has already consented
+    /// to (overwrite dialog, unsaved-changes prompt, or Save As
+    /// pick), so later in-place saves of that file don't re-ask.
+    /// Keyed by path, not reset on `load`: a save reloads the same
+    /// path (must stay confirmed), while opening a different file
+    /// simply doesn't match and asks again.
+    overwrite_confirmed_for: Option<PathBuf>,
     /// Per-box display layout cache, keyed by stable `BoxId` and
     /// validated by `BoxLayoutKey`.
     box_layouts: HashMap<BoxId, canvas::CachedBoxLayout>,
@@ -144,6 +162,7 @@ impl TypewriterApp {
             resize_box: None,
             clipboard: None,
             close_state: CloseState::Idle,
+            overwrite_confirmed_for: None,
             box_layouts: HashMap::new(),
             canvas_view: None,
         };
@@ -245,25 +264,39 @@ impl TypewriterApp {
                 dialog = dialog.set_file_name(name);
             }
             match dialog.save_file() {
-                Some(path) => path,
+                Some(path) => {
+                    // Picking the destination already consents to
+                    // overwriting it; later in-place saves of that
+                    // file don't re-ask.
+                    self.overwrite_confirmed_for = Some(path.clone());
+                    path
+                }
                 None => return false,
             }
         } else {
             let Some(source) = self.pdf_path.clone() else {
                 return false;
             };
-            let confirmed = rfd::MessageDialog::new()
-                .set_level(rfd::MessageLevel::Warning)
-                .set_title("Overwrite PDF?")
-                .set_description(format!(
-                    "Save baked text into {}? This rewrites the file.",
-                    source.display()
-                ))
-                .set_buttons(rfd::MessageButtons::YesNo)
-                .show();
-            if confirmed != rfd::MessageDialogResult::Yes {
-                return false;
+            // `InPlaceConfirmed`: the unsaved-changes prompt's Save
+            // choice already consents to the overwrite. Otherwise
+            // only the first in-place overwrite per file asks.
+            if mode != SaveMode::InPlaceConfirmed
+                && overwrite_needs_confirmation(self.overwrite_confirmed_for.as_deref(), &source)
+            {
+                let confirmed = rfd::MessageDialog::new()
+                    .set_level(rfd::MessageLevel::Warning)
+                    .set_title("Overwrite PDF?")
+                    .set_description(format!(
+                        "Save baked text into {}? This rewrites the file.",
+                        source.display()
+                    ))
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show();
+                if confirmed != rfd::MessageDialogResult::Yes {
+                    return false;
+                }
             }
+            self.overwrite_confirmed_for = Some(source.clone());
             source
         };
         let result = match self.pdf_doc.as_mut() {

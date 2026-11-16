@@ -6,8 +6,9 @@
 //! picked path is parked in the prompt and only loaded after Discard
 //! or a successful Save, so Cancel / failed Save / failed load keep
 //! the current document and its overlays. Save only proceeds when
-//! `save` reports the file was actually written, so cancelling the
-//! overwrite dialog or a failed write keeps the prompt open.
+//! `save` reports the file was actually written, so a failed write
+//! keeps the prompt open. The prompt's Save choice is itself the
+//! overwrite consent, so `save` is not asked to confirm it again.
 
 use super::{
     ACCENT, BTN_H, CloseState, DANGER, PendingAction, PromptChoice, RADIUS, SaveMode, TypewriterApp,
@@ -60,12 +61,12 @@ impl TypewriterApp {
         }
     }
 
-    /// Apply a prompt button. Failed Save (cancelled overwrite dialog
-    /// or failed write) leaves the prompt — and the overlays — in place.
+    /// Apply a prompt button. Failed Save (failed write) leaves
+    /// the prompt — and the overlays — in place.
     pub(super) fn resolve_prompt(&mut self, ctx: &egui::Context, choice: PromptChoice) {
         match choice {
             PromptChoice::Save => {
-                if self.save(SaveMode::InPlace) {
+                if self.save(SaveMode::InPlaceConfirmed) {
                     self.complete_prompt(ctx);
                 }
             }

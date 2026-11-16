@@ -1,4 +1,7 @@
-use super::{CanvasView, CloseState, Mode, PendingAction, PromptChoice, TypewriterApp};
+use super::{
+    CanvasView, CloseState, Mode, PendingAction, PromptChoice, SaveMode, TypewriterApp,
+    overwrite_needs_confirmation,
+};
 use crate::overlay::{BoxKind, OverlayState};
 use crate::render::PageRenderer;
 use crate::test_util::TempFile;
@@ -21,6 +24,7 @@ fn test_app() -> TypewriterApp {
         resize_box: None,
         clipboard: None,
         close_state: CloseState::Idle,
+        overwrite_confirmed_for: None,
         box_layouts: std::collections::HashMap::new(),
         canvas_view: None,
     }
@@ -369,6 +373,56 @@ fn failed_save_keeps_pending_open_and_boxes() {
     assert_eq!(app.overlays.items.len(), 1);
     assert!(app.overlays.dirty);
     assert_eq!(app.pdf_path, None);
+}
+
+#[test]
+fn overwrite_confirmation_is_needed_only_until_that_file_is_confirmed() {
+    let confirmed = std::path::PathBuf::from("confirmed.pdf");
+    let other = std::path::PathBuf::from("other.pdf");
+    assert!(overwrite_needs_confirmation(None, &confirmed));
+    assert!(!overwrite_needs_confirmation(Some(&confirmed), &confirmed));
+    assert!(overwrite_needs_confirmation(Some(&other), &confirmed));
+}
+
+#[test]
+fn saving_from_pending_open_prompt_writes_without_second_confirmation() {
+    let current = write_pdf(2);
+    let next = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+    let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.overlays.item_mut(id).unwrap().text = "Ada".to_string();
+    app.begin_open(next.path().to_path_buf());
+
+    app.resolve_prompt(&egui::Context::default(), PromptChoice::Save);
+
+    // The prompt completes only when `save` actually wrote the
+    // file; a second (overwrite) dialog would leave it Prompting.
+    assert_eq!(app.close_state, CloseState::Idle);
+    assert_eq!(app.overwrite_confirmed_for.as_deref(), Some(current.path()));
+    assert_eq!(app.pdf_path.as_deref(), Some(next.path()));
+    assert_eq!(app.overlays.items, Vec::new());
+    assert_eq!(app.page_count(), 1);
+}
+
+#[test]
+fn confirmed_in_place_save_writes_repeatedly_without_asking_again() {
+    let path = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(path.path().to_path_buf()));
+    // As recorded by a first confirmed overwrite (or prompt Save).
+    app.overwrite_confirmed_for = Some(path.path().to_path_buf());
+
+    for text in ["Ada", "Grace"] {
+        let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+        app.overlays.item_mut(id).unwrap().text = text.to_string();
+        assert!(app.save(SaveMode::InPlace), "save of {text} must write");
+        assert!(!app.overlays.dirty);
+        // The save reloads the same path; consent must survive it,
+        // or the next Ctrl+S would ask again.
+        assert_eq!(app.overwrite_confirmed_for.as_deref(), Some(path.path()));
+        assert_eq!(app.pdf_path.as_deref(), Some(path.path()));
+    }
 }
 
 #[test]
