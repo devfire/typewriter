@@ -422,6 +422,7 @@ mod page_tree;
 mod signature_font;
 mod winansi;
 
+pub(crate) use helvetica::helvetica_width_pt;
 pub use winansi::{winansi_bytes, winansi_lines};
 
 #[cfg(test)]

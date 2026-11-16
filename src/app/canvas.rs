@@ -15,7 +15,6 @@ struct BoxLayoutKey {
     size_pt_bits: u32,
     kind: BoxKind,
     width_pt_bits: Option<u32>,
-    zoom_bits: u32,
 }
 
 /// Laid-out display lines and measured auto width for one box,
@@ -26,7 +25,7 @@ pub(super) struct CachedBoxLayout {
     auto_width_pt: f32,
 }
 
-fn box_layout_key(item: &OverlayText, zoom: f32) -> BoxLayoutKey {
+fn box_layout_key(item: &OverlayText) -> BoxLayoutKey {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     item.text.hash(&mut hasher);
     BoxLayoutKey {
@@ -34,7 +33,6 @@ fn box_layout_key(item: &OverlayText, zoom: f32) -> BoxLayoutKey {
         size_pt_bits: item.size_pt.to_bits(),
         kind: item.kind,
         width_pt_bits: item.width_pt.map(f32::to_bits),
-        zoom_bits: zoom.to_bits(),
     }
 }
 
@@ -196,18 +194,20 @@ impl TypewriterApp {
     }
 
     /// Display lines and measured auto width for box `idx`, cached by
-    /// text, size, kind, fixed width, and zoom.
+    /// text, size, kind, and fixed width. Layout is in PDF points and
+    /// uses the baked Helvetica metrics for text, so it does not
+    /// depend on zoom.
     fn box_layout(&mut self, ui: &egui::Ui, idx: BoxId, zoom: f32) -> Option<(Arc<[String]>, f32)> {
         let item = self.overlays.item(idx)?;
-        let key = box_layout_key(item, zoom);
+        let key = box_layout_key(item);
         if let Some(cached) = self.box_layouts.get(&idx)
             && cached.key == key
         {
             return Some((Arc::clone(&cached.lines), cached.auto_width_pt));
         }
         let font = box_font(item, zoom);
-        let lines = box_display_lines(ui, item, &font, zoom);
-        let auto_width_pt = measured_width_pt(ui, &lines, &font, zoom, item.kind);
+        let lines = box_display_lines(item);
+        let auto_width_pt = measured_width_pt(ui, &lines, &font, zoom, item);
         let lines: Arc<[String]> = Arc::from(lines);
         self.box_layouts.insert(
             idx,
@@ -429,22 +429,27 @@ fn paint_line_at_baseline(
     );
 }
 
-/// On-page box width in points: widest line as actually rendered by
-/// egui (real font metrics, not a per-character guess), plus padding.
+/// On-page box width in points: widest line plus padding. Text uses
+/// the baked Helvetica metrics so the auto-fit frame matches the
+/// saved PDF; signatures use egui's script-font metrics, as only the
+/// preview renders that face.
 fn measured_width_pt(
     ui: &egui::Ui,
     lines: &[String],
     font: &egui::FontId,
     zoom: f32,
-    kind: BoxKind,
+    item: &OverlayText,
 ) -> f32 {
-    let min_pt = match kind {
+    let min_pt = match item.kind {
         BoxKind::Signature => 96.0,
         BoxKind::Text => 48.0,
     };
     let widest_pt = lines
         .iter()
-        .map(|line| line_width_pt(ui, line, font, zoom))
+        .map(|line| match item.kind {
+            BoxKind::Text => crate::pdf::helvetica_width_pt(line, item.size_pt),
+            BoxKind::Signature => line_width_pt(ui, line, font, zoom),
+        })
         .fold(0.0_f32, f32::max);
     (widest_pt + 8.0).max(min_pt)
 }
@@ -465,7 +470,8 @@ fn box_font(item: &OverlayText, zoom: f32) -> egui::FontId {
     }
 }
 
-/// Rendered width of one line in points, via egui's real font metrics.
+/// Rendered width of one signature line in points, via egui's real
+/// font metrics (text boxes use Helvetica metrics instead).
 fn line_width_pt(ui: &egui::Ui, line: &str, font: &egui::FontId, zoom: f32) -> f32 {
     ui.fonts(|fonts| {
         fonts
@@ -475,20 +481,18 @@ fn line_width_pt(ui: &egui::Ui, line: &str, font: &egui::FontId, zoom: f32) -> f
     }) / zoom
 }
 
-/// Lines as drawn: single flattened line for signatures, wrapped for fixed-width text.
-fn box_display_lines(
-    ui: &egui::Ui,
-    item: &OverlayText,
-    font: &egui::FontId,
-    zoom: f32,
-) -> Vec<String> {
+/// Lines as drawn: single flattened line for signatures, wrapped for
+/// fixed-width text. Text wraps with the same Helvetica metrics as
+/// the PDF baker (`pdf::box_operations`), so preview line breaks match the
+/// saved file exactly and never depend on zoom or the UI font.
+pub(super) fn box_display_lines(item: &OverlayText) -> Vec<String> {
     match item.kind {
         BoxKind::Signature => vec![item.signature_line()],
         BoxKind::Text => {
             let lines = overlay::logical_lines(&item.text);
             match item.width_pt {
                 Some(width) => overlay::wrap_lines(&lines, width.max(24.0), &|line: &str| {
-                    line_width_pt(ui, line, font, zoom)
+                    crate::pdf::helvetica_width_pt(line, item.size_pt)
                 }),
                 None => lines,
             }

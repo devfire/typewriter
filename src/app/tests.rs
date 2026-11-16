@@ -55,6 +55,28 @@ fn moving_canvas_origin_preserves_page_screen_position() {
 }
 
 #[test]
+fn preview_wrap_uses_helvetica_metrics_not_ui_font() {
+    let mut overlays = OverlayState::default();
+    let id = overlays.add(0, 0.0, 0.0, BoxKind::Text);
+    let item = overlays.item_mut(id).unwrap();
+    item.text = "The quick brown fox jumps over the lazy dog".to_string();
+    item.size_pt = 12.0;
+    item.width_pt = Some(235.0);
+    let item = overlays.item(id).unwrap();
+    // 237.4 pt wide in Helvetica at 12 pt, so the baked PDF wraps it
+    // at 235 pt; egui's proportional font measures ~233.7 pt and the
+    // old preview kept it on one line.
+    let lines = super::canvas::box_display_lines(item);
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines
+            .iter()
+            .all(|line| crate::pdf::helvetica_width_pt(line, 12.0) <= 235.0)
+    );
+    assert_eq!(lines.join(" "), item.text);
+}
+
+#[test]
 fn sidebar_width_is_not_pushed_out_by_hint_text_when_resized_narrow() {
     use eframe::egui::{Context, Event, PointerButton, Pos2, RawInput, Rect, Vec2};
 

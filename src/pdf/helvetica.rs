@@ -47,7 +47,7 @@ fn width_1000(byte: u8) -> u16 {
 /// using standard Helvetica will lay it out. Unmappable characters are
 /// measured as the `?` the encoder substitutes for them.
 #[must_use]
-pub(super) fn helvetica_width_pt(text: &str, size_pt: f32) -> f32 {
+pub(crate) fn helvetica_width_pt(text: &str, size_pt: f32) -> f32 {
     let units: u32 = super::winansi_bytes(text)
         .iter()
         .map(|byte| u32::from(width_1000(*byte)))

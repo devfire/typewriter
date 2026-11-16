@@ -2,7 +2,8 @@
 //!
 //! Single source of truth for `ASCENT`/`LEADING`: the egui preview in
 //! `app.rs` and the content-stream baker in `pdf.rs` both import these,
-//! so preview and baked output cannot drift.
+//! and both wrap text with `pdf::helvetica_width_pt`, so preview and
+//! baked output cannot drift.
 
 use eframe::egui::{Pos2, Rect};
 
@@ -247,9 +248,9 @@ fn hard_break(
 /// Greedily wrap one logical line to at most `max_width_pt`, breaking
 /// at whitespace boundaries without normalizing spaces and hard-breaking
 /// a single word wider than the box. `measure` returns a candidate
-/// string's rendered width in points, so each caller wraps with its own
-/// font metrics (egui preview vs. Helvetica baker) while sharing the
-/// breaking rules. A non-positive width disables wrapping.
+/// string's rendered width in points; both the preview and the baker
+/// pass Helvetica metrics so their line breaks match exactly, while
+/// sharing the breaking rules. A non-positive width disables wrapping.
 #[must_use]
 pub fn wrap_line(line: &str, max_width_pt: f32, measure: &impl Fn(&str) -> f32) -> Vec<String> {
     if max_width_pt <= 0.0 || line.is_empty() || measure(line) <= max_width_pt {
