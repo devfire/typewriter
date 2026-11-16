@@ -13,7 +13,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to match rust-toolchain.toml; do not float on stable.
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
       - run: cargo fmt --all -- --check

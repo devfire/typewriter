@@ -14,7 +14,7 @@ fn signature_bake_embeds_momo_and_is_extractable() {
     let idx = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
     overlays.item_mut(idx).unwrap().text = "Jane Doe".to_string();
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
-    assert!(overlays.items.is_empty());
+    assert_eq!(overlays.items, Vec::new());
     let bytes = std::fs::read(out.path()).unwrap();
     let text = String::from_utf8_lossy(&bytes);
     assert!(text.contains("MomoSignature"), "Type0 font not embedded");

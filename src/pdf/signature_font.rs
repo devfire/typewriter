@@ -198,7 +198,7 @@ fn parse_to_unicode(content: &[u8]) -> Result<BTreeMap<u16, String>> {
         if !tokens.len().is_multiple_of(2) {
             bail!("invalid ToUnicode bfchar entry count");
         }
-        for pair in tokens.chunks_exact(2) {
+        for pair in tokens.as_chunks::<2>().0 {
             let gid =
                 u16::from_str_radix(pair[0].trim(), 16).context("invalid ToUnicode glyph id")?;
             map.insert(gid, decode_utf16_hex(pair[1])?);

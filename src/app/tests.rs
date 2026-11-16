@@ -327,7 +327,7 @@ fn discarding_pending_open_loads_new_pdf_and_clears_boxes() {
     app.resolve_prompt(&egui::Context::default(), PromptChoice::Discard);
 
     assert_eq!(app.close_state, CloseState::Idle);
-    assert!(app.overlays.items.is_empty());
+    assert_eq!(app.overlays.items, Vec::new());
     assert!(!app.overlays.dirty);
     assert_eq!(app.pdf_path.as_deref(), Some(next.path()));
     assert_eq!(app.page_count(), 1);
@@ -486,7 +486,7 @@ fn copy_then_paste_lands_on_current_page_and_cut_clears_source() {
     assert_eq!(item.text, "Ada");
 
     app.cut_selected();
-    assert!(app.overlays.items.is_empty());
+    assert_eq!(app.overlays.items, Vec::new());
     assert_eq!(app.overlays.selected, None);
     app.page = 1;
     app.paste_clipboard();

@@ -301,7 +301,7 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
-    assert!(overlays.items.is_empty());
+    assert_eq!(overlays.items, Vec::new());
     assert!(!overlays.dirty);
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
@@ -324,7 +324,7 @@ fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
     assert_eq!(overlays.items.len(), 1);
     assert!(overlays.dirty);
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
-    assert!(overlays.items.is_empty());
+    assert_eq!(overlays.items, Vec::new());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     let text = pdf.doc.extract_text(&[1]).unwrap();
     assert_eq!(text.matches("Hello").count(), 1, "baked >1x: {text:?}");

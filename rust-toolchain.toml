@@ -1,0 +1,9 @@
+# Pinned so local and CI clippy/rustfmt are the same release.
+# Floating `stable` in CI added pedantic lints (rust 1.100) that
+# local 1.97.1 did not know, breaking CI on unmodified code.
+# Bump deliberately: install the new toolchain, run
+# `cargo clippy --workspace --all-targets -- -D warnings -D clippy::pedantic`,
+# then update this file and .github/workflows/ci.yml together.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

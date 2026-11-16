@@ -61,7 +61,7 @@ fn add_selects_and_remove_clears_selection() {
     assert!(state.dirty);
     state.remove(id);
     assert_eq!(state.selected, None);
-    assert!(state.items.is_empty());
+    assert_eq!(state.items, Vec::new());
 }
 
 #[test]
