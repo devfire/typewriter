@@ -1,13 +1,19 @@
-//! Unsaved-changes guard for window close.
+//! Unsaved-changes guard for window close and opening another PDF.
 //!
 //! egui signals a window-close request for exactly one frame; if the
 //! document is dirty we cancel that close and show a modal offering
-//! Save / Discard / Cancel. Save only closes when `save` reports the
-//! file was actually written, so cancelling the overwrite dialog or a
-//! failed write keeps the app (and the prompt) open.
+//! Save / Discard / Cancel. The same modal guards `begin_open`: the
+//! picked path is parked in the prompt and only loaded after Discard
+//! or a successful Save, so Cancel / failed Save / failed load keep
+//! the current document and its overlays. Save only proceeds when
+//! `save` reports the file was actually written, so cancelling the
+//! overwrite dialog or a failed write keeps the prompt open.
 
-use super::{ACCENT, BTN_H, CloseState, DANGER, RADIUS, SaveMode, TypewriterApp};
+use super::{
+    ACCENT, BTN_H, CloseState, DANGER, PendingAction, PromptChoice, RADIUS, SaveMode, TypewriterApp,
+};
 use eframe::egui;
+use std::path::PathBuf;
 
 /// Visual style of a prompt button: filled (Save/Discard, caller
 /// supplies the fill color) vs. plain (Cancel).
@@ -37,15 +43,66 @@ impl TypewriterApp {
         }
         if ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.close_state = CloseState::Prompting;
+            self.close_state = CloseState::Prompting(PendingAction::Close);
         }
     }
 
-    /// Modal shown after [`Self::guard_close`] cancelled a close.
-    pub(super) fn close_prompt(&mut self, ctx: &egui::Context) {
-        if self.close_state != CloseState::Prompting {
+    /// Open `path`, or — with unsaved boxes — park it behind the
+    /// unsaved-changes prompt instead of discarding them.
+    pub(super) fn begin_open(&mut self, path: PathBuf) {
+        if matches!(self.close_state, CloseState::Prompting(_)) {
             return;
         }
+        if self.overlays.dirty {
+            self.close_state = CloseState::Prompting(PendingAction::Open(path));
+        } else {
+            self.load(path);
+        }
+    }
+
+    /// Apply a prompt button. Failed Save (cancelled overwrite dialog
+    /// or failed write) leaves the prompt — and the overlays — in place.
+    pub(super) fn resolve_prompt(&mut self, ctx: &egui::Context, choice: PromptChoice) {
+        match choice {
+            PromptChoice::Save => {
+                if self.save(SaveMode::InPlace) {
+                    self.complete_prompt(ctx);
+                }
+            }
+            PromptChoice::Discard => self.complete_prompt(ctx),
+            PromptChoice::Cancel => self.close_state = CloseState::Idle,
+        }
+    }
+
+    /// Carry out the action parked behind the prompt. For `Open` this
+    /// is the first point overlays can be lost, and only via a
+    /// successful `load` (which clears them); a failed load keeps them.
+    fn complete_prompt(&mut self, ctx: &egui::Context) {
+        let CloseState::Prompting(action) =
+            std::mem::replace(&mut self.close_state, CloseState::Idle)
+        else {
+            return;
+        };
+        match action {
+            PendingAction::Close => {
+                self.close_state = CloseState::Allowed;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            PendingAction::Open(path) => {
+                self.load(path);
+            }
+        }
+    }
+
+    /// Modal shown while a [`PendingAction`] waits on unsaved changes.
+    pub(super) fn close_prompt(&mut self, ctx: &egui::Context) {
+        let CloseState::Prompting(action) = &self.close_state else {
+            return;
+        };
+        let verb = match action {
+            PendingAction::Close => "before closing",
+            PendingAction::Open(_) => "before opening another PDF",
+        };
         let mut save = false;
         let mut discard = false;
         let mut cancel = false;
@@ -62,10 +119,8 @@ impl TypewriterApp {
                     |name| format!("\u{201c}{}\u{201d}", name.to_string_lossy()),
                 );
             ui.label(
-                egui::RichText::new(format!(
-                    "{file} has unsaved changes. Save them before closing?"
-                ))
-                .size(14.0),
+                egui::RichText::new(format!("{file} has unsaved changes. Save them {verb}?"))
+                    .size(14.0),
             );
             ui.add_space(16.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -98,17 +153,11 @@ impl TypewriterApp {
             });
         });
         if save {
-            // A cancelled overwrite dialog or failed write leaves
-            // `dirty` set; keep the prompt open instead of closing.
-            if self.save(SaveMode::InPlace) {
-                self.close_state = CloseState::Allowed;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
+            self.resolve_prompt(ctx, PromptChoice::Save);
         } else if discard {
-            self.close_state = CloseState::Allowed;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            self.resolve_prompt(ctx, PromptChoice::Discard);
         } else if cancel || modal.should_close() {
-            self.close_state = CloseState::Idle;
+            self.resolve_prompt(ctx, PromptChoice::Cancel);
         }
     }
 }

@@ -1,4 +1,4 @@
-use super::{CanvasView, CloseState, Mode, TypewriterApp};
+use super::{CanvasView, CloseState, Mode, PendingAction, PromptChoice, TypewriterApp};
 use crate::overlay::{BoxKind, OverlayState};
 use crate::render::PageRenderer;
 use crate::test_util::TempFile;
@@ -216,6 +216,114 @@ fn failed_reload_after_save_is_surfaced_not_masked_by_saved() {
     assert_eq!(app.page, 1);
     assert!((app.zoom - 1.7).abs() < f32::EPSILON);
     assert_eq!(app.page_count(), 3);
+}
+
+#[test]
+fn opening_another_pdf_with_unsaved_boxes_prompts_instead_of_loading() {
+    let current = write_pdf(2);
+    let next = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+
+    app.begin_open(next.path().to_path_buf());
+
+    assert_eq!(
+        app.close_state,
+        CloseState::Prompting(PendingAction::Open(next.path().to_path_buf()))
+    );
+    assert_eq!(app.overlays.items.len(), 1);
+    assert!(app.overlays.dirty);
+    assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
+    assert_eq!(app.page_count(), 2);
+}
+
+#[test]
+fn cancelling_pending_open_keeps_current_document_and_boxes() {
+    let current = write_pdf(2);
+    let next = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.begin_open(next.path().to_path_buf());
+
+    app.resolve_prompt(&egui::Context::default(), PromptChoice::Cancel);
+
+    assert_eq!(app.close_state, CloseState::Idle);
+    assert_eq!(app.overlays.items.len(), 1);
+    assert!(app.overlays.dirty);
+    assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
+    assert_eq!(app.page_count(), 2);
+}
+
+#[test]
+fn discarding_pending_open_loads_new_pdf_and_clears_boxes() {
+    let current = write_pdf(2);
+    let next = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.begin_open(next.path().to_path_buf());
+
+    app.resolve_prompt(&egui::Context::default(), PromptChoice::Discard);
+
+    assert_eq!(app.close_state, CloseState::Idle);
+    assert!(app.overlays.items.is_empty());
+    assert!(!app.overlays.dirty);
+    assert_eq!(app.pdf_path.as_deref(), Some(next.path()));
+    assert_eq!(app.page_count(), 1);
+}
+
+#[test]
+fn discarding_pending_open_to_missing_file_keeps_boxes() {
+    let current = write_pdf(2);
+    let missing = TempFile::new("missing");
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.begin_open(missing.path().to_path_buf());
+
+    app.resolve_prompt(&egui::Context::default(), PromptChoice::Discard);
+
+    assert_eq!(app.close_state, CloseState::Idle);
+    assert_eq!(app.overlays.items.len(), 1);
+    assert!(app.overlays.dirty);
+    assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
+    assert_eq!(app.page_count(), 2);
+}
+
+#[test]
+fn failed_save_keeps_pending_open_and_boxes() {
+    // No document loaded: `save` fails before any dialog, exercising
+    // the same failed-save branch as a cancelled overwrite prompt.
+    let next = write_pdf(1);
+    let mut app = test_app();
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.begin_open(next.path().to_path_buf());
+
+    app.resolve_prompt(&egui::Context::default(), PromptChoice::Save);
+
+    assert_eq!(
+        app.close_state,
+        CloseState::Prompting(PendingAction::Open(next.path().to_path_buf()))
+    );
+    assert_eq!(app.overlays.items.len(), 1);
+    assert!(app.overlays.dirty);
+    assert_eq!(app.pdf_path, None);
+}
+
+#[test]
+fn opening_another_pdf_without_unsaved_boxes_loads_immediately() {
+    let current = write_pdf(2);
+    let next = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+
+    app.begin_open(next.path().to_path_buf());
+
+    assert_eq!(app.close_state, CloseState::Idle);
+    assert_eq!(app.pdf_path.as_deref(), Some(next.path()));
+    assert_eq!(app.page_count(), 1);
 }
 
 #[test]

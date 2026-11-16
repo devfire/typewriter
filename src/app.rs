@@ -35,14 +35,32 @@ struct CanvasView {
     scroll_offset: egui::Vec2,
 }
 
-/// Window-close lifecycle: `Prompting` while the unsaved-changes
-/// modal is up, `Allowed` once the user saved or discarded so the
-/// re-issued close request passes through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Unsaved-changes lifecycle: `Prompting` while the modal is up
+/// (carrying the action waiting on it), `Allowed` once the user
+/// saved or discarded for a window close so the re-issued close
+/// request passes through.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CloseState {
     Idle,
-    Prompting,
+    Prompting(PendingAction),
     Allowed,
+}
+
+/// Action waiting on the unsaved-changes prompt. `Open` carries the
+/// path picked before prompting, so Cancel just drops it and only a
+/// successful `load` (on Discard / successful Save) clears overlays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum PendingAction {
+    Close,
+    Open(PathBuf),
+}
+
+/// Button chosen in the unsaved-changes prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PromptChoice {
+    Save,
+    Discard,
+    Cancel,
 }
 
 /// Where a save writes: overwrite the open file, or prompt for a
@@ -191,7 +209,7 @@ impl TypewriterApp {
             .add_filter("PDF", &["pdf"])
             .pick_file()
         {
-            self.load(path);
+            self.begin_open(path);
         }
     }
 
@@ -299,8 +317,8 @@ impl TypewriterApp {
     }
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        // While the close prompt is up it owns the keyboard (Esc dismisses it).
-        if self.close_state == CloseState::Prompting || ctx.wants_keyboard_input() {
+        // While the unsaved-changes prompt is up it owns the keyboard (Esc dismisses it).
+        if matches!(self.close_state, CloseState::Prompting(_)) || ctx.wants_keyboard_input() {
             return;
         }
         let (open, save, copy, cut, paste, duplicate, zoom_in, zoom_out, escape, delete) = ctx
