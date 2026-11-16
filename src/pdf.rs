@@ -44,6 +44,15 @@ impl PdfDoc {
             std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
         );
         let doc = Document::load_mem(&bytes).context("failed to parse PDF")?;
+        // Encrypted PDFs are unsupported, including owner-password-only
+        // files (empty user password): lopdf silently decrypts those
+        // with the empty password and strips the trailer `/Encrypt`
+        // entry, recording the state in `encryption_state` instead, so
+        // both leftovers must be checked. Otherwise an owner-only file
+        // would open and a save would re-emit it unencrypted.
+        if doc.encryption_state.is_some() || doc.trailer.get(b"Encrypt").is_ok() {
+            bail!("Encrypted/password-protected PDFs are not supported");
+        }
         let page_ids: Vec<ObjectId> = doc.get_pages().into_values().collect();
         if page_ids.is_empty() {
             bail!("PDF has no pages");
@@ -425,6 +434,8 @@ mod winansi;
 pub(crate) use helvetica::helvetica_width_pt;
 pub use winansi::{winansi_bytes, winansi_lines};
 
+#[cfg(test)]
+mod encrypted_tests;
 #[cfg(test)]
 mod signature_tests;
 #[cfg(test)]
