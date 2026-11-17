@@ -3837,6 +3837,7 @@ dependencies = [
  "rfd",
  "sha2",
  "subsetter",
+ "tempfile",
  "ttf-parser",
 ]
 

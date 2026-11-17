@@ -13,10 +13,6 @@ use anyhow::{Context, Result};
 use lopdf::{Document, IncrementalDocument, Object, ObjectId};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Counter for unique temp-file names used by atomic saves.
-static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl PdfDoc {
     /// Bake `by_page` into `doc`: embed the shared signature font
@@ -181,49 +177,46 @@ impl PdfDoc {
 
     /// Write `bytes` to `out` without ever truncating `out` in place.
     ///
-    /// The bytes are written to a unique temp file in the same
-    /// directory (so the final `rename` stays on one filesystem and
-    /// is atomic), `sync_all`-ed, then renamed over `out`. A failed
-    /// write leaves the original intact and removes the temp file.
-    /// When `out` already exists, its permissions are re-applied to
-    /// the replacement.
+    /// A symlink destination is resolved first, so the rename
+    /// replaces the link target (in the target's own directory)
+    /// and the link itself survives. The bytes go to an
+    /// exclusively created temp file in that directory (0600 on
+    /// Unix, so there is no world-readable window), the existing
+    /// file's permissions are applied to the handle before any
+    /// content is written, the file is `sync_all`-ed, then it is
+    /// persisted (renamed) over the destination. A failed write
+    /// leaves the original intact and removes the temp file.
     pub(super) fn atomic_write(bytes: &[u8], out: &Path) -> Result<()> {
-        let dir = out
+        use std::io::Write as _;
+        // Resolve a symlink (or any existing destination) to its
+        // target; a not-yet-existing path keeps its given form.
+        let resolved = std::fs::canonicalize(out).unwrap_or_else(|_| out.to_path_buf());
+        let dir = resolved
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map_or_else(|| std::path::PathBuf::from("."), Path::to_path_buf);
-        let stem = out.file_name().map_or_else(
-            || std::ffi::OsString::from("out.pdf"),
-            std::ffi::OsStr::to_os_string,
-        );
-        let seq = SAVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut tmp_name = std::ffi::OsString::from(".");
-        tmp_name.push(&stem);
-        tmp_name.push(format!(".tmp-{}-{seq}", std::process::id()));
-        let tmp = dir.join(tmp_name);
-        let result = (|| {
-            let permissions = std::fs::metadata(out).map(|m| m.permissions()).ok();
-            std::fs::write(&tmp, bytes)
-                .with_context(|| format!("failed to save {}", out.display()))?;
-            if let Some(permissions) = permissions {
-                std::fs::set_permissions(&tmp, permissions).with_context(|| {
-                    format!("failed to preserve permissions for {}", out.display())
-                })?;
-            }
-            std::fs::File::open(&tmp)
-                .with_context(|| format!("failed to sync {}", out.display()))?
-                .sync_all()
-                .with_context(|| format!("failed to sync {}", out.display()))?;
-            std::fs::rename(&tmp, out)
-                .with_context(|| format!("failed to save {}", out.display()))?;
-            if let Ok(dir_fd) = std::fs::File::open(&dir) {
-                let _ = dir_fd.sync_all();
-            }
-            Ok::<(), anyhow::Error>(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
+        let permissions = std::fs::metadata(&resolved).map(|m| m.permissions()).ok();
+        let mut tmp = tempfile::NamedTempFile::new_in(&dir)
+            .with_context(|| format!("failed to save {}", out.display()))?;
+        if let Some(permissions) = permissions {
+            tmp.as_file().set_permissions(permissions).with_context(|| {
+                format!("failed to preserve permissions for {}", out.display())
+            })?;
         }
-        result
+        tmp.write_all(bytes)
+            .with_context(|| format!("failed to save {}", out.display()))?;
+        tmp.as_file()
+            .sync_all()
+            .with_context(|| format!("failed to sync {}", out.display()))?;
+        tmp.persist(&resolved)
+            .map_err(|err| err.error)
+            .with_context(|| format!("failed to save {}", out.display()))?;
+        // Best-effort directory sync for rename durability: some
+        // filesystems cannot sync directories, and failure here
+        // cannot corrupt the already-synced file, so it is ignored.
+        if let Ok(dir_fd) = std::fs::File::open(&dir) {
+            let _ = dir_fd.sync_all();
+        }
+        Ok(())
     }
 }

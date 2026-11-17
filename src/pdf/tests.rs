@@ -433,6 +433,52 @@ fn in_place_save_replaces_file_without_temp_litter() {
     assert!(text.contains("Hello"), "baked text missing: {text:?}");
 }
 
+#[cfg(unix)]
+#[test]
+fn in_place_save_through_symlink_updates_target_and_keeps_link() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let link = TempFile::new("symlink-link");
+    std::os::unix::fs::symlink(out.path(), link.path()).unwrap();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 144.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "World".to_string();
+    pdf.bake_and_save(&mut overlays, link.path()).unwrap();
+    assert!(
+        std::fs::symlink_metadata(link.path())
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "save through a symlink replaced the link with a regular file"
+    );
+    assert_eq!(
+        std::fs::read(link.path()).unwrap(),
+        std::fs::read(out.path()).unwrap()
+    );
+    let text = PdfDoc::open(out.path())
+        .unwrap()
+        .doc
+        .extract_text(&[1])
+        .unwrap();
+    assert!(text.contains("World"), "target not updated: {text:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn atomic_write_to_new_file_is_not_world_readable() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let out = TempFile::new("atomic-new");
+    PdfDoc::atomic_write(b"%PDF-fake", out.path()).unwrap();
+    assert_eq!(std::fs::read(out.path()).unwrap(), b"%PDF-fake");
+    assert_eq!(
+        std::fs::metadata(out.path()).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
 #[test]
 fn open_without_media_or_crop_box_is_an_error() {
     let (mut fixture, _out) = fixture_pdf();
