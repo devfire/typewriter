@@ -667,3 +667,43 @@ fn helvetica_from_shadowed_inherited_resources_is_not_reused() {
         alias
     );
 }
+
+#[test]
+fn alternating_text_and_signature_bake_in_canvas_order() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    // Canvas paints in `items` order; the baker must emit the same
+    // sequence so overlapping boxes stack identically. Grouping by
+    // kind (all texts, then all signatures) reverses overlaps.
+    let sig1 = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
+    overlays.item_mut(sig1).unwrap().text = "Jane Doe".to_string();
+    let txt1 = overlays.add(0, 72.0, 600.0, BoxKind::Text);
+    overlays.item_mut(txt1).unwrap().text = "Hello".to_string();
+    let sig2 = overlays.add(0, 72.0, 500.0, BoxKind::Signature);
+    overlays.item_mut(sig2).unwrap().text = "Zed Quinn".to_string();
+    let txt2 = overlays.add(0, 72.0, 400.0, BoxKind::Text);
+    overlays.item_mut(txt2).unwrap().text = "World".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let page_id = pdf.page_ids[0];
+    let contents = pdf.doc.get_page_contents(page_id);
+    assert_eq!(contents.len(), 1);
+    let stream = pdf
+        .doc
+        .get_object(contents[0])
+        .unwrap()
+        .as_stream()
+        .unwrap();
+    let ops = Content::decode(&stream.content).unwrap().operations;
+    let aliases: Vec<Vec<u8>> = ops
+        .iter()
+        .filter(|op| op.operator == "Tf")
+        .map(|op| op.operands[0].as_name().unwrap().to_vec())
+        .collect();
+    assert_eq!(aliases.len(), 4, "one Tf per box: {aliases:?}");
+    let is_text = |alias: &[u8]| alias == b"F_TW";
+    let is_sig = |alias: &[u8]| alias == b"F_SIG";
+    assert!(
+        is_sig(&aliases[0]) && is_text(&aliases[1]) && is_sig(&aliases[2]) && is_text(&aliases[3]),
+        "baked paint order must follow canvas order, got {aliases:?}"
+    );
+}

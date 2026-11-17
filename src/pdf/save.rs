@@ -36,29 +36,36 @@ impl PdfDoc {
             let page_id = page_ids[*page];
             let page_box = boxes_pt[*page];
             let rotate = rotations[*page];
+            let needs_text = boxes.iter().any(|item| item.kind == BoxKind::Text);
+            let needs_sig = boxes.iter().any(|item| item.kind == BoxKind::Signature);
+            let text_alias = needs_text
+                .then(|| Self::ensure_helvetica(doc, page_id))
+                .transpose()?;
+            let sig_alias =
+                if needs_sig && let (Some(_), Some(type0_id)) = (sig_font, shared_sig_font) {
+                    Some(Self::ensure_signature(doc, page_id, type0_id)?)
+                } else {
+                    None
+                };
             let mut operations = Vec::new();
-            let text_boxes: Vec<&OverlayText> = boxes
-                .iter()
-                .copied()
-                .filter(|item| item.kind == BoxKind::Text)
-                .collect();
-            if !text_boxes.is_empty() {
-                let alias = Self::ensure_helvetica(doc, page_id)?;
-                for item in text_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, rotate, None));
-                }
-            }
-            let sig_boxes: Vec<&OverlayText> = boxes
-                .iter()
-                .copied()
-                .filter(|item| item.kind == BoxKind::Signature)
-                .collect();
-            if let (false, Some(font), Some(type0_id)) =
-                (sig_boxes.is_empty(), sig_font, shared_sig_font)
-            {
-                let alias = Self::ensure_signature(doc, page_id, type0_id)?;
-                for item in sig_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, rotate, Some(font)));
+            for &item in boxes {
+                match item.kind {
+                    BoxKind::Text => {
+                        if let Some(alias) = text_alias.as_ref() {
+                            operations.extend(box_operations(item, alias, page_box, rotate, None));
+                        }
+                    }
+                    BoxKind::Signature => {
+                        if let (Some(alias), Some(font)) = (sig_alias.as_ref(), sig_font) {
+                            operations.extend(box_operations(
+                                item,
+                                alias,
+                                page_box,
+                                rotate,
+                                Some(font),
+                            ));
+                        }
+                    }
                 }
             }
             let id = append_overlay_stream(doc, page_id, operations)
