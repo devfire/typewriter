@@ -126,23 +126,19 @@ impl PdfDoc {
         } else {
             Some(signature_font::face()?)
         };
+        // Subset the signature font to this bake's glyphs once, so a
+        // single tiny subset serves every signed page. A subset can
+        // never gain glyphs, so a reloaded document's earlier subsets
+        // are left untouched and this bake embeds its own.
+        let sig_font = sig_face
+            .as_ref()
+            .map(|face| signature_font::SignatureFont::prepare(face, &all_sig_boxes))
+            .transpose()?;
         let mut staged = self.doc.clone();
-        // Prepare the single shared Type0 signature font once per bake
-        // (creating it or extending an already-embedded one with the
-        // union of `all_sig_boxes`) so the font program is embedded at
-        // most once per document and `/W` + `ToUnicode` are not
-        // re-parsed on every signed page.
-        let shared_sig_font = if let Some(face) = sig_face.as_ref() {
-            let type0_id = if let Some(existing) = signature_font::find_signature_font(&staged) {
-                signature_font::extend_signature_font(&mut staged, existing, face, &all_sig_boxes)?;
-                existing
-            } else {
-                signature_font::create_signature_font(&mut staged, face, &all_sig_boxes)
-            };
-            Some(type0_id)
-        } else {
-            None
-        };
+        let shared_sig_font = sig_font
+            .as_ref()
+            .zip(sig_face.as_ref())
+            .map(|(font, face)| font.embed(&mut staged, face));
         for (page, boxes) in by_page {
             let page_id = self.page_ids[page];
             let page_box = self.boxes_pt[page];
@@ -164,12 +160,12 @@ impl PdfDoc {
                 .copied()
                 .filter(|item| item.kind == BoxKind::Signature)
                 .collect();
-            if let (false, Some(face), Some(type0_id)) =
-                (sig_boxes.is_empty(), sig_face.as_ref(), shared_sig_font)
+            if let (false, Some(font), Some(type0_id)) =
+                (sig_boxes.is_empty(), sig_font.as_ref(), shared_sig_font)
             {
                 let alias = Self::ensure_signature(&mut staged, page_id, type0_id)?;
                 for item in sig_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, rotate, Some(face)));
+                    operations.extend(box_operations(item, &alias, page_box, rotate, Some(font)));
                 }
             }
             append_overlay_stream(&mut staged, page_id, operations)
@@ -266,7 +262,7 @@ impl PdfDoc {
         page_id: ObjectId,
         type0_id: ObjectId,
     ) -> Result<String> {
-        if let Some((alias, _)) = signature_font::signature_font_on_page(doc, page_id) {
+        if let Some(alias) = signature_font::signature_alias(doc, page_id, type0_id) {
             return Ok(alias);
         }
         let fonts = doc
@@ -329,7 +325,7 @@ fn box_operations(
     alias: &str,
     page_box: (f32, f32, f32, f32),
     rotate: i64,
-    sig_face: Option<&ttf_parser::Face<'_>>,
+    sig_font: Option<&signature_font::SignatureFont>,
 ) -> Vec<Operation> {
     let size = item.size_pt;
     let leading = LEADING * size;
@@ -351,9 +347,9 @@ fn box_operations(
         Operation::new("Tf", vec![alias.into(), Object::Real(size)]),
         Operation::new("Tm", tm),
     ];
-    let lines: Vec<Object> = match (item.kind, sig_face) {
-        (BoxKind::Signature, Some(face)) => vec![Object::String(
-            signature_font::encode_hex(face, &item.signature_line()),
+    let lines: Vec<Object> = match (item.kind, sig_font) {
+        (BoxKind::Signature, Some(font)) => vec![Object::String(
+            font.encode_hex(&item.signature_line()),
             StringFormat::Hexadecimal,
         )],
         (BoxKind::Text, _) if item.width_pt.is_some() => {

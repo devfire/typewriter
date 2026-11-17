@@ -108,7 +108,7 @@ fn multi_page_signature_bake_embeds_font_program_once() {
 }
 
 #[test]
-fn reloaded_signature_bake_extends_embedded_font_with_new_glyphs() {
+fn reloaded_signature_bake_adds_fresh_subset_font() {
     // First session signs with a subset of glyphs.
     let (mut pdf, out) = fixture_pdf();
     let mut overlays = OverlayState::default();
@@ -117,8 +117,9 @@ fn reloaded_signature_bake_extends_embedded_font_with_new_glyphs() {
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     drop(pdf);
     // Second session: reload from disk and sign with characters the
-    // first signature never used (`Z`, `Q`, `u`, `i`). The reused
-    // embedded font must gain widths and ToUnicode entries for them.
+    // first signature never used (`Z`, `Q`, `u`, `i`). The first
+    // subset cannot gain those glyphs, so this bake embeds a fresh
+    // subset font alongside it instead of patching the old one.
     let mut pdf = PdfDoc::open(out.path()).unwrap();
     let mut overlays = OverlayState::default();
     let second = overlays.add(0, 72.0, 600.0, BoxKind::Signature);
@@ -127,49 +128,70 @@ fn reloaded_signature_bake_extends_embedded_font_with_new_glyphs() {
     let extracted = pdf.doc.extract_text(&[1]).unwrap();
     assert!(extracted.contains("Jane Doe"), "first: {extracted:?}");
     assert!(extracted.contains("Zed Quinn"), "second: {extracted:?}");
-    // Explicit /W entry for a glyph only the second signature uses.
-    let face = signature_font::face().unwrap();
-    let z_gid = u16::from_be_bytes(signature_font::encode_hex(&face, "Z").try_into().unwrap());
-    let cid_font = pdf
+    // Two subset font programs, each a tiny fraction of the 406 KB
+    // full font (asserted against the full size, not a magic cap).
+    let font_lens: Vec<i64> = pdf
         .doc
         .objects
         .values()
-        .find_map(|obj| {
-            let dict = obj.as_dict().ok()?;
-            let is_cid = dict
-                .get(b"Subtype")
-                .is_ok_and(|subtype| subtype.as_name().is_ok_and(|name| name == b"CIDFontType2"));
-            is_cid.then_some(dict)
+        .filter_map(|obj| match obj {
+            Object::Stream(stream) => stream.dict.get(b"Length1").ok()?.as_i64().ok(),
+            _ => None,
         })
-        .expect("signed PDF has no CIDFont");
-    let widths = cid_font.get(b"W").unwrap().as_array().unwrap();
-    let mut explicit = Vec::new();
-    let mut idx = 0;
-    while idx + 1 < widths.len() {
-        if let (Ok(gid), Ok(run)) = (widths[idx].as_i64(), widths[idx + 1].as_array())
-            && gid == i64::from(z_gid)
-        {
-            explicit = run.clone();
-            break;
-        }
-        idx += 2;
+        .collect();
+    assert_eq!(font_lens.len(), 2, "expected two subset font programs");
+    for len in &font_lens {
+        assert!(
+            usize::try_from(*len).is_ok_and(|len| len > 0 && len < crate::signature::FONT_BYTES.len() / 10),
+            "font program is not a small subset: {len}"
+        );
     }
-    assert_eq!(explicit.len(), 1, "no explicit /W width for glyph Z");
-    assert_ne!(explicit[0].as_i64().unwrap(), 500, "Z uses default width");
-    // Extending must not re-embed the font program.
-    let font_programs = pdf
-        .doc
-        .objects
-        .values()
-        .filter(|obj| matches!(obj, Object::Stream(stream) if stream.dict.has(b"Length1")))
-        .count();
-    assert_eq!(font_programs, 1, "font program re-embedded on reload");
+    // A /W width matching Z's real advance exists in some CIDFont
+    // (subset glyph ids differ per bake, so match by width value).
+    let face = signature_font::face().unwrap();
+    let z_gid = face.glyph_index('Z').unwrap();
+    let z_width = signature_font::width_1000(
+        face.glyph_hor_advance(z_gid).unwrap(),
+        face.units_per_em(),
+    );
+    assert_ne!(z_width, 500, "test premise: Z must not use default width");
+    let has_z_width = pdf.doc.objects.values().any(|obj| {
+        let Ok(dict) = obj.as_dict() else { return false };
+        let is_cid = dict
+            .get(b"Subtype")
+            .is_ok_and(|s| s.as_name().is_ok_and(|n| n == b"CIDFontType2"));
+        if !is_cid {
+            return false;
+        }
+        let Ok(widths) = dict.get(b"W").and_then(|w| w.as_array()) else {
+            return false;
+        };
+        widths.iter().any(|w| {
+            w.as_array()
+                .is_ok_and(|run| run.iter().any(|v| v.as_i64().is_ok_and(|x| x == z_width)))
+        })
+    });
+    assert!(has_z_width, "no CIDFont carries Z's width {z_width}");
 }
 
 #[test]
-fn signature_encode_uses_two_byte_glyph_ids() {
+fn signature_encode_uses_two_byte_subset_glyph_ids() {
     let face = signature_font::face().unwrap();
-    let encoded = signature_font::encode_hex(&face, "Ab");
+    let mut item = crate::overlay::OverlayText::new(
+        crate::overlay::BoxId::default(),
+        0,
+        0.0,
+        0.0,
+        BoxKind::Signature,
+    );
+    item.text = "Ab".to_string();
+    let font = signature_font::SignatureFont::prepare(&face, &[&item]).unwrap();
+    assert!(
+        font.subset_len() < crate::signature::FONT_BYTES.len() / 10,
+        "subset is not small: {}",
+        font.subset_len()
+    );
+    let encoded = font.encode_hex("Ab");
     assert_eq!(encoded.len(), 4);
     assert_ne!(&encoded[0..2], &[0, 0], "capital A mapped to .notdef");
 }
