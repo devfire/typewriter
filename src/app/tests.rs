@@ -1202,7 +1202,12 @@ fn preview_baseline_matches_baked_baseline() {
     };
 
     let text_item = app.overlays.item(text_id).unwrap();
-    let baked_text_y = crate::overlay::text_matrix(text_item, (0.0, 0.0, 612.0, page_h_pt), 0)[5];
+    let geom = crate::geometry::PageGeometry {
+        id: (0, 0),
+        rect: crate::geometry::PageRect::new(0.0, 0.0, 612.0, page_h_pt),
+        rotation: crate::geometry::Rotation::R0,
+    };
+    let baked_text_y = crate::overlay::text_matrix(text_item, &geom)[5];
     assert!(
         (baseline_pdf_y("First line") - baked_text_y).abs() <= 1e-3,
         "line 0 preview baseline must match baked baseline"
@@ -1214,7 +1219,7 @@ fn preview_baseline_matches_baked_baseline() {
     );
 
     let sig_item = app.overlays.item(sig_id).unwrap();
-    let baked_sig_y = crate::overlay::text_matrix(sig_item, (0.0, 0.0, 612.0, page_h_pt), 0)[5];
+    let baked_sig_y = crate::overlay::text_matrix(sig_item, &geom)[5];
     assert!(
         (baseline_pdf_y("Ada Lovelace") - baked_sig_y).abs() <= 1e-3,
         "signature preview baseline must match baked baseline"

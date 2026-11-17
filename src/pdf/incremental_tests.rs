@@ -110,7 +110,7 @@ fn failed_incremental_save_restores_doc_and_retry_bakes_once() {
     let input = TempFile::new("incremental-failure-input");
     fixture.doc.save(input.path()).unwrap();
     let mut pdf = PdfDoc::open(input.path()).unwrap();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let out = TempFile::new("incremental-failure-out");
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
@@ -145,7 +145,7 @@ fn failed_edit_save_restores_stripped_doc_and_retry_bakes_once() {
     let id = overlays.items.first().unwrap().id;
     overlays.item_mut(id).unwrap().text = "AFTER".to_string();
 
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let stripped_len = pdf.doc.get_page_contents(page_id).len();
     let missing = TempFile::new("incremental-edit-missing");
     let bad_out = missing.path().join("out.pdf");
@@ -191,7 +191,7 @@ fn failed_save_after_deleting_all_restored_boxes_retry_clears_text() {
     }
     assert!(overlays.items.is_empty());
 
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let stripped_len = pdf.doc.get_page_contents(page_id).len();
     let missing = TempFile::new("incremental-delete-missing");
     let bad_out = missing.path().join("out.pdf");

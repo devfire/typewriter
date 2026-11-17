@@ -1,6 +1,16 @@
 use super::*;
+use crate::geometry::{PageGeometry, PageRect, Rotation};
 use crate::overlay::baseline_y;
 use crate::test_util::TempFile;
+
+/// Unrotated geometry for `box_operations` unit tests.
+fn test_geom() -> PageGeometry {
+    PageGeometry {
+        id: (0, 0),
+        rect: PageRect::new(0.0, 0.0, 612.0, 800.0),
+        rotation: Rotation::R0,
+    }
+}
 
 #[test]
 fn winansi_encodes_e_acute_as_single_byte() {
@@ -33,7 +43,7 @@ fn two_lines_produce_two_tj_and_one_td() {
     );
     item.text = "a\nb".to_string();
     item.color = [0, 0, 255];
-    let ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let ops = box_operations(&item, b"F_TW", &test_geom(), None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
     assert_eq!(
         operators,
@@ -72,7 +82,7 @@ fn helvetica_width_uses_standard_metrics() {
 #[test]
 fn fixed_width_text_wraps_at_word_boundaries() {
     let item = fixed_width_item("aaaa bbbb cccc", 30.0);
-    let ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let ops = box_operations(&item, b"F_TW", &test_geom(), None);
     assert_eq!(
         tj_strings(&ops),
         vec![b"aaaa".to_vec(), b"bbbb".to_vec(), b"cccc".to_vec()]
@@ -86,9 +96,9 @@ fn fixed_width_text_wraps_at_word_boundaries() {
 #[test]
 fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
     let mut item = fixed_width_item("  a\tb   c", 200.0);
-    let fixed_ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let fixed_ops = box_operations(&item, b"F_TW", &test_geom(), None);
     item.width_pt = None;
-    let auto_ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let auto_ops = box_operations(&item, b"F_TW", &test_geom(), None);
     assert_eq!(tj_strings(&fixed_ops), vec![b"  a    b   c".to_vec()]);
     assert_eq!(tj_strings(&fixed_ops), tj_strings(&auto_ops));
 }
@@ -96,7 +106,7 @@ fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
 #[test]
 fn fixed_width_long_word_is_hard_broken() {
     let item = fixed_width_item("aaaaaaaaaa", 30.0);
-    let ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let ops = box_operations(&item, b"F_TW", &test_geom(), None);
     assert_eq!(
         tj_strings(&ops),
         vec![b"aaaa".to_vec(), b"aaaa".to_vec(), b"aa".to_vec()]
@@ -106,7 +116,7 @@ fn fixed_width_long_word_is_hard_broken() {
 #[test]
 fn fixed_width_bake_wraps_text_in_saved_content() {
     let (mut pdf, out) = fixture_pdf();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "aaaa bbbb cccc".to_string();
@@ -145,8 +155,8 @@ fn rotated_pages_bake_text_at_previewed_position() {
         fixture.doc.save(input.path()).unwrap();
         // Go through `open` so the `/Rotate` inheritance is exercised.
         let mut pdf = PdfDoc::open(input.path()).unwrap();
-        assert_eq!(pdf.sizes_pt, vec![size], "rotate {rotate}");
-        let page_id = pdf.page_ids[0];
+        assert_eq!(pdf.pages[0].display_size(), size, "rotate {rotate}");
+        let page_id = pdf.pages[0].id;
         let mut overlays = OverlayState::default();
         let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
         overlays.item_mut(idx).unwrap().text = "Hello".to_string();
@@ -165,7 +175,7 @@ fn rotated_pages_bake_text_at_previewed_position() {
 fn cropped_pages_bake_text_at_previewed_position() {
     // MediaBox 612x792 at the origin; CropBox inset by (36, 48) -> 540x696 at (36, 48).
     let (mut fixture, out) = fixture_pdf();
-    let page_id = fixture.page_ids[0];
+    let page_id = fixture.pages[0].id;
     fixture.doc.get_dictionary_mut(page_id).unwrap().set(
         "CropBox",
         vec![36.into(), 48.into(), 576.into(), 744.into()],
@@ -173,7 +183,7 @@ fn cropped_pages_bake_text_at_previewed_position() {
     let input = TempFile::new("cropped");
     fixture.doc.save(input.path()).unwrap();
     let mut pdf = PdfDoc::open(input.path()).unwrap();
-    assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
+    assert_eq!(pdf.pages[0].display_size(), (540.0, 696.0));
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
@@ -191,7 +201,7 @@ fn cropped_pages_bake_text_at_previewed_position() {
 fn inverted_media_box_opens_with_positive_size() {
     // ISO 32000-1 §7.9.5: corners may be listed in any order.
     let (mut fixture, _out) = fixture_pdf();
-    let page_id = fixture.page_ids[0];
+    let page_id = fixture.pages[0].id;
     fixture
         .doc
         .get_dictionary_mut(page_id)
@@ -200,13 +210,13 @@ fn inverted_media_box_opens_with_positive_size() {
     let input = TempFile::new("inverted-mediabox");
     fixture.doc.save(input.path()).unwrap();
     let pdf = PdfDoc::open(input.path()).unwrap();
-    assert_eq!(pdf.sizes_pt, vec![(612.0, 792.0)]);
+    assert_eq!(pdf.pages[0].display_size(), (612.0, 792.0));
 }
 
 #[test]
 fn inverted_crop_box_intersects_like_normalized_crop_box() {
     let (mut fixture, _out) = fixture_pdf();
-    let page_id = fixture.page_ids[0];
+    let page_id = fixture.pages[0].id;
     fixture.doc.get_dictionary_mut(page_id).unwrap().set(
         "CropBox",
         vec![576.into(), 744.into(), 36.into(), 48.into()],
@@ -214,7 +224,7 @@ fn inverted_crop_box_intersects_like_normalized_crop_box() {
     let input = TempFile::new("inverted-cropbox");
     fixture.doc.save(input.path()).unwrap();
     let pdf = PdfDoc::open(input.path()).unwrap();
-    assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
+    assert_eq!(pdf.pages[0].display_size(), (540.0, 696.0));
 }
 
 fn render_first_page_rgba(path: &Path) -> Vec<u8> {
@@ -246,7 +256,7 @@ fn bake_wraps_existing_content_in_q_q_to_isolate_graphics_and_text_state() {
     assert!(clean_rgba.iter().any(|&b| b != 255));
 
     let (mut dirty_fixture, _unused) = fixture_pdf();
-    let page_id = dirty_fixture.page_ids[0];
+    let page_id = dirty_fixture.pages[0].id;
     let dirty_ops =
         b"0.75 0 0 -0.75 0 841.92 cm\n0 0 1 1 re W n\nBT 3 Tr 50 Tc 50 Tw 10 Tz 40 Ts ET";
     let orig_id = dirty_fixture
@@ -306,21 +316,16 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, TempFile) {
     });
     doc.trailer.set("Root", Object::Reference(catalog_id));
     let out = TempFile::new(&format!("fixture-{rotate}"));
-    let rotate = rotate.rem_euclid(360);
-    let size = if matches!(rotate, 90 | 270) {
-        (792.0, 612.0)
-    } else {
-        (612.0, 792.0)
-    };
     let pdf = PdfDoc {
         bytes: Arc::new(Vec::new()),
         render_bytes: Arc::new(Vec::new()),
         embedded: None,
         doc,
-        page_ids: vec![page_id],
-        sizes_pt: vec![size],
-        boxes_pt: vec![(0.0, 0.0, 612.0, 792.0)],
-        rotations: vec![rotate],
+        pages: vec![PageGeometry {
+            id: page_id,
+            rect: PageRect::new(0.0, 0.0, 612.0, 792.0),
+            rotation: Rotation::from_degrees(rotate),
+        }],
         dirty: std::collections::BTreeSet::new(),
     };
     (pdf, out)
@@ -329,7 +334,7 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, TempFile) {
 #[test]
 fn bake_drains_boxes_and_second_bake_adds_no_streams() {
     let (mut pdf, out) = fixture_pdf();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
@@ -346,7 +351,7 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
 #[test]
 fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
     let (mut pdf, out) = fixture_pdf();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let mut overlays = OverlayState::default();
     let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
@@ -374,7 +379,7 @@ fn bake_with_out_of_range_page_bails_without_dropping_boxes() {
     // Nothing baked, nothing cleared: the box survives for a retry.
     assert_eq!(overlays.items.len(), 1);
     assert!(overlays.is_dirty());
-    assert_eq!(pdf.doc.get_page_contents(pdf.page_ids[0]).len(), 0);
+    assert_eq!(pdf.doc.get_page_contents(pdf.pages[0].id).len(), 0);
 }
 
 #[test]
@@ -484,7 +489,7 @@ fn atomic_write_to_new_file_is_not_world_readable() {
 #[test]
 fn open_without_media_or_crop_box_is_an_error() {
     let (mut fixture, _out) = fixture_pdf();
-    let page_id = fixture.page_ids[0];
+    let page_id = fixture.pages[0].id;
     fixture
         .doc
         .get_dictionary_mut(page_id)
@@ -507,7 +512,7 @@ fn short_media_box_aborts_instead_of_inheriting() {
     // abort the parent walk, like a non-numeric element does, rather
     // than silently inheriting the ancestor's box.
     let (mut fixture, _out) = fixture_pdf();
-    let page_id = fixture.page_ids[0];
+    let page_id = fixture.pages[0].id;
     let parent_id = fixture
         .doc
         .get_dictionary(page_id)
@@ -540,7 +545,7 @@ fn short_media_box_aborts_instead_of_inheriting() {
 #[test]
 fn existing_ftw_alias_is_not_overwritten() {
     let (mut pdf, _out) = fixture_pdf();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let times_id = pdf.doc.add_object(dictionary! {
         "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Times-Roman",
     });
@@ -573,7 +578,7 @@ fn existing_ftw_alias_is_not_overwritten() {
 #[test]
 fn non_standard_helvetica_on_page_is_not_reused() {
     let (mut pdf, _out) = fixture_pdf();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let embedded_desc = pdf.doc.add_object(dictionary! {
         "Type" => "FontDescriptor", "FontFile2" => Object::Reference((999, 0)),
     });
@@ -640,7 +645,7 @@ fn helvetica_from_shadowed_inherited_resources_is_not_reused() {
     // fresh Helvetica into the page's effective resources instead of
     // emitting `/FH ... Tf` against a dict that has no /FH.
     let (mut pdf, _out) = fixture_pdf();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let parent_id = pdf
         .doc
         .get_dictionary(page_id)
@@ -715,7 +720,7 @@ fn alternating_text_and_signature_bake_in_canvas_order() {
     let txt2 = overlays.add(0, 72.0, 400.0, BoxKind::Text);
     overlays.item_mut(txt2).unwrap().text = "World".to_string();
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
-    let page_id = pdf.page_ids[0];
+    let page_id = pdf.pages[0].id;
     let contents = pdf.doc.get_page_contents(page_id);
     assert_eq!(contents.len(), 1);
     let stream = pdf
@@ -747,7 +752,7 @@ fn non_utf8_helvetica_alias_is_reused_verbatim() {
     // the normal ASCII alias alongside it.
     for alias in [vec![0xFF], b"F1".to_vec()] {
         let (mut pdf, out) = fixture_pdf();
-        let page_id = pdf.page_ids[0];
+        let page_id = pdf.pages[0].id;
         let helv_id = pdf.doc.add_object(dictionary! {
             "Type" => "Font", "Subtype" => "Type1",
             "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",

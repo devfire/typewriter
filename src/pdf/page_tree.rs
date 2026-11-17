@@ -1,6 +1,7 @@
 //! PDF page-tree inheritance (`MediaBox`, `CropBox`, `Rotate`) and
 //! inherited `Resources` / `Font` dictionary mutation.
 
+use crate::geometry::PageRect;
 use anyhow::Result;
 use lopdf::{Dictionary, Document, Object, ObjectId};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -94,16 +95,23 @@ pub(super) fn inherited_int(doc: &Document, page_id: ObjectId, key: &[u8]) -> Op
 /// `MediaBox`, matching what hayro renders. `CropBox` defaults to
 /// `MediaBox` when absent (and vice versa). Disjoint boxes clamp to a
 /// zero-area box at the max origin, mirroring hayro's intersection.
-pub(super) fn page_box(doc: &Document, page_id: ObjectId) -> Option<(f32, f32, f32, f32)> {
+pub(super) fn page_box(doc: &Document, page_id: ObjectId) -> Option<PageRect> {
     let media = inherited_array(doc, page_id, b"MediaBox");
     let crop = inherited_array(doc, page_id, b"CropBox");
     match (media, crop) {
         (Some([mx0, my0, mx1, my1]), Some([cx0, cy0, cx1, cy1])) => {
             let x0 = mx0.max(cx0);
             let y0 = my0.max(cy0);
-            Some((x0, y0, mx1.min(cx1).max(x0), my1.min(cy1).max(y0)))
+            Some(PageRect::new(
+                x0,
+                y0,
+                mx1.min(cx1).max(x0),
+                my1.min(cy1).max(y0),
+            ))
         }
-        (Some([x0, y0, x1, y1]), None) | (None, Some([x0, y0, x1, y1])) => Some((x0, y0, x1, y1)),
+        (Some([x0, y0, x1, y1]), None) | (None, Some([x0, y0, x1, y1])) => {
+            Some(PageRect::new(x0, y0, x1, y1))
+        }
         (None, None) => None,
     }
 }

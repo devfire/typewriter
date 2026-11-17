@@ -5,6 +5,7 @@
 //! and both wrap text with `pdf::helvetica_width_pt`, so preview and
 //! baked output cannot drift.
 
+use crate::geometry::PageGeometry;
 use eframe::egui::{Pos2, Rect};
 
 mod history;
@@ -535,33 +536,55 @@ pub fn baseline_y(y1: f32, y_top_pt: f32, size_pt: f32) -> f32 {
     y1 - y_top_pt - ASCENT * size_pt
 }
 
-/// `Tm` operands `[a b c d e f]` for a box on a page with `/Rotate`
-/// `rotate` (clockwise display rotation, in degrees).
+/// `Tm` operands `[a b c d e f]` for a box on a page with `geom`'s
+/// clockwise display rotation.
 ///
 /// Overlay coordinates are display space: `x_pt` measured from the
 /// displayed page's left edge, `y_top_pt` from its top edge. The
 /// linear part counter-rotates the glyphs in unrotated user space so
 /// they read upright once the renderer applies `/Rotate`, and
 /// `(e, f)` maps the first line's baseline origin back into user
-/// space. `/Rotate` values that are not a multiple of 90 are invalid
-/// per the PDF spec and are treated as 0, matching how `sizes_pt`
-/// only swaps the display size for 90/270.
+/// space. Non-quarter-turn `/Rotate` values cannot reach here:
+/// [`Rotation::from_degrees`] normalizes them to [`Rotation::R0`] at
+/// open, so the match stays exhaustive with no wildcard arm.
 #[must_use]
-pub fn text_matrix(item: &OverlayText, page_box: (f32, f32, f32, f32), rotate: i64) -> [f32; 6] {
-    let (x0, y0, x1, y1) = page_box;
+pub fn text_matrix(item: &OverlayText, geom: &PageGeometry) -> [f32; 6] {
+    use crate::geometry::Rotation;
+    let rect = geom.rect;
     // Distance from the displayed page's top edge to the baseline.
     let baseline_top = item.y_top_pt + ASCENT * item.size_pt;
-    match rotate.rem_euclid(360) {
-        90 => [0.0, 1.0, -1.0, 0.0, x0 + baseline_top, y0 + item.x_pt],
-        180 => [-1.0, 0.0, 0.0, -1.0, x1 - item.x_pt, y0 + baseline_top],
-        270 => [0.0, -1.0, 1.0, 0.0, x1 - baseline_top, y1 - item.x_pt],
-        _ => [
+    match geom.rotation {
+        Rotation::R90 => [
+            0.0,
+            1.0,
+            -1.0,
+            0.0,
+            rect.x0 + baseline_top,
+            rect.y0 + item.x_pt,
+        ],
+        Rotation::R180 => [
+            -1.0,
+            0.0,
+            0.0,
+            -1.0,
+            rect.x1 - item.x_pt,
+            rect.y0 + baseline_top,
+        ],
+        Rotation::R270 => [
+            0.0,
+            -1.0,
+            1.0,
+            0.0,
+            rect.x1 - baseline_top,
+            rect.y1 - item.x_pt,
+        ],
+        Rotation::R0 => [
             1.0,
             0.0,
             0.0,
             1.0,
-            x0 + item.x_pt,
-            baseline_y(y1, item.y_top_pt, item.size_pt),
+            rect.x0 + item.x_pt,
+            baseline_y(rect.y1, item.y_top_pt, item.size_pt),
         ],
     }
 }

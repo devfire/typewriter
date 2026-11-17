@@ -11,6 +11,7 @@
 //! usable Helvetica fonts are reused; a new standard-14 Helvetica or
 //! embedded signature font is added only when needed.
 
+use crate::geometry::{PageGeometry, Rotation};
 use crate::overlay::{BoxKind, LEADING, OverlayState, OverlayText, text_matrix, wrap_lines};
 use anyhow::{Context, Result, bail};
 use lopdf::content::{Content, Operation};
@@ -45,13 +46,11 @@ pub struct PdfDoc {
     /// for payloads that fail field validation.
     embedded: Option<embedded::Embedded>,
     doc: Document,
-    page_ids: Vec<ObjectId>,
-    /// Display size per page in points (rotation-aware).
-    pub sizes_pt: Vec<(f32, f32)>,
-    /// `(x0, y0, x1, y1)` effective visible box (`CropBox` ∩ `MediaBox`) per page.
-    boxes_pt: Vec<(f32, f32, f32, f32)>,
-    /// Clockwise `/Rotate` per page, normalized to `0..360`.
-    rotations: Vec<i64>,
+    /// One entry per page: object id, effective visible box, and rotation.
+    /// A single vector replaces the former parallel `page_ids` /
+    /// `sizes_pt` / `boxes_pt` / `rotations` vectors, so equal lengths
+    /// are structural instead of commented.
+    pub pages: Vec<PageGeometry>,
     /// Pre-existing objects changed in memory since `bytes` was
     /// written (e.g. page dictionaries stripped by
     /// `take_embedded_boxes`). The next incremental save copies
@@ -82,23 +81,21 @@ impl PdfDoc {
         if page_ids.is_empty() {
             bail!("PDF has no pages");
         }
-        let mut boxes_pt = Vec::with_capacity(page_ids.len());
-        let mut sizes_pt = Vec::with_capacity(page_ids.len());
-        let mut rotations = Vec::with_capacity(page_ids.len());
+        let mut pages = Vec::with_capacity(page_ids.len());
         for (idx, page_id) in page_ids.iter().enumerate() {
             // MediaBox is required (inheritable) per the PDF spec;
             // silently assuming US Letter would bake/display text at
             // wrong coordinates, so a page with neither MediaBox nor
             // CropBox anywhere in its parent chain is an error.
-            let page_box = page_box(&doc, *page_id)
+            let rect = page_box(&doc, *page_id)
                 .ok_or_else(|| anyhow::anyhow!("page {} has no MediaBox or CropBox", idx + 1))?;
-            boxes_pt.push(page_box);
-            let (w, h) = (page_box.2 - page_box.0, page_box.3 - page_box.1);
-            let rotate = inherited_int(&doc, *page_id, b"Rotate").unwrap_or(0);
-            let rotate = rotate.rem_euclid(360);
-            rotations.push(rotate);
-            let rotated = matches!(rotate, 90 | 270);
-            sizes_pt.push(if rotated { (h, w) } else { (w, h) });
+            let rotation =
+                Rotation::from_degrees(inherited_int(&doc, *page_id, b"Rotate").unwrap_or(0));
+            pages.push(PageGeometry {
+                id: *page_id,
+                rect,
+                rotation,
+            });
         }
         // A field-valid `/Typewriter` payload means the baked
         // overlay streams in this file may be this app's own boxes.
@@ -113,10 +110,7 @@ impl PdfDoc {
             render_bytes,
             embedded,
             doc,
-            page_ids,
-            sizes_pt,
-            boxes_pt,
-            rotations,
+            pages,
             dirty: BTreeSet::new(),
         })
     }
@@ -141,10 +135,10 @@ impl PdfDoc {
         let Some(embedded) = self.embedded.take() else {
             return Vec::new();
         };
-        if !embedded::verify(&self.doc, &self.page_ids, &embedded) {
+        if !embedded::verify(&self.doc, &self.pages, &embedded) {
             return Vec::new();
         }
-        let changed_pages = embedded::strip_verified(&mut self.doc, &self.page_ids, &embedded);
+        let changed_pages = embedded::strip_verified(&mut self.doc, &self.pages, &embedded);
         // The stripped pages now differ from the backing bytes; the
         // next incremental save must carry them even when it bakes
         // nothing itself (see `dirty`).
@@ -159,7 +153,7 @@ impl PdfDoc {
     }
 
     pub fn page_count(&self) -> usize {
-        self.page_ids.len()
+        self.pages.len()
     }
 
     /// Bake every non-empty overlay box into its page as a new content
@@ -188,11 +182,11 @@ impl PdfDoc {
             // An out-of-range page is a caller bug, not a box to
             // silently drop: bail before staging anything, leaving
             // `overlays` intact so nothing is lost on `clear_baked`.
-            if item.page >= self.page_ids.len() {
+            if item.page >= self.pages.len() {
                 bail!(
                     "overlay box is on page {} but the document has {} page(s)",
                     item.page + 1,
-                    self.page_ids.len()
+                    self.pages.len()
                 );
             }
             by_page.entry(item.page).or_default().push(item);
@@ -204,19 +198,17 @@ impl PdfDoc {
             .flat_map(|boxes| boxes.iter().copied())
             .filter(|item| item.kind == BoxKind::Signature)
             .collect();
-        let sig_face = if all_sig_boxes.is_empty() {
-            None
-        } else {
-            Some(signature_font::face()?)
-        };
         // Subset the signature font to this bake's glyphs once, so a
         // single tiny subset serves every signed page. A subset can
         // never gain glyphs, so a reloaded document's earlier subsets
-        // are left untouched and this bake embeds its own.
-        let sig_font = sig_face
-            .as_ref()
-            .map(|face| signature_font::SignatureFont::prepare(face, &all_sig_boxes))
-            .transpose()?;
+        // are left untouched and this bake embeds its own. The font
+        // owns its parsed face, so there is no paired `Option` to
+        // keep in sync: `None` means no signature boxes in this bake.
+        let sig_font = if all_sig_boxes.is_empty() {
+            None
+        } else {
+            Some(signature_font::SignatureFont::prepare(&all_sig_boxes)?)
+        };
         // Exactly the boxes being baked, kept for the embedded
         // payload that makes the saved file re-editable. Rejected
         // here — before baking anything — when the next open could
@@ -227,20 +219,13 @@ impl PdfDoc {
             .values()
             .flat_map(|boxes| boxes.iter().map(|item| (*item).clone()))
             .collect();
-        embedded::validate_boxes(&baked_boxes, self.page_ids.len())?;
+        embedded::validate_boxes(&baked_boxes, self.pages.len())?;
         let saved = if self.bytes.is_empty() {
             let mut staged = self.doc.clone();
             // A full write serializes the whole staged document, so
             // the incremental update's touched set is not needed.
-            let (baked_streams, mut dropped) = Self::bake_pages(
-                &mut staged,
-                &self.page_ids,
-                &self.boxes_pt,
-                &self.rotations,
-                &by_page,
-                sig_font.as_ref(),
-                sig_face.as_ref(),
-            )?;
+            let (baked_streams, mut dropped) =
+                Self::bake_pages(&mut staged, &self.pages, &by_page, sig_font.as_ref())?;
             embedded::store(&mut staged, &baked_boxes, &baked_streams, &mut dropped)?;
             let mut saved = Vec::new();
             staged
@@ -260,13 +245,7 @@ impl PdfDoc {
             // the old baked streams from the on-disk revision.
             let doc_backup = (!self.dirty.is_empty()).then(|| self.doc.clone());
             let dirty_backup = self.dirty.clone();
-            match self.bake_and_save_incremental(
-                &by_page,
-                &baked_boxes,
-                sig_font.as_ref(),
-                sig_face.as_ref(),
-                out,
-            ) {
+            match self.bake_and_save_incremental(&by_page, &baked_boxes, sig_font.as_ref(), out) {
                 Ok(saved) => saved,
                 Err(err) => {
                     if let Some(backup) = doc_backup {
@@ -292,7 +271,7 @@ impl PdfDoc {
         // (`refresh_after_save`, like `load`) can claim it without
         // touching the disk; without this the in-memory document
         // would bake but never restore.
-        self.embedded = embedded::extract(&self.doc, self.page_ids.len());
+        self.embedded = embedded::extract(&self.doc, self.pages.len());
         // The just-saved bytes render correctly as-is (the boxes
         // are baked in and the overlays are drained below); the app
         // refreshes the preview from this in-memory state without
@@ -405,13 +384,12 @@ fn free_alias(fonts: &std::collections::BTreeMap<Vec<u8>, &Dictionary>, base: &s
 fn box_operations(
     item: &OverlayText,
     alias: &[u8],
-    page_box: (f32, f32, f32, f32),
-    rotate: i64,
+    geom: &PageGeometry,
     sig_font: Option<&signature_font::SignatureFont>,
 ) -> Vec<Operation> {
     let size = item.size_pt;
     let leading = LEADING * size;
-    let tm: Vec<Object> = text_matrix(item, page_box, rotate)
+    let tm: Vec<Object> = text_matrix(item, geom)
         .into_iter()
         .map(Object::Real)
         .collect();

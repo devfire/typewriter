@@ -8,8 +8,9 @@
 //! document is restored (see `bake_and_save`).
 
 use super::{PdfDoc, append_overlay_stream, box_operations, signature_font};
+use crate::geometry::PageGeometry;
 use crate::overlay::{BoxKind, OverlayText};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use lopdf::{Document, IncrementalDocument, ObjectId};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,58 +22,53 @@ impl PdfDoc {
     /// records their ids and hashes (see `embedded::store`).
     pub(super) fn bake_pages(
         doc: &mut Document,
-        page_ids: &[ObjectId],
-        boxes_pt: &[(f32, f32, f32, f32)],
-        rotations: &[i64],
+        pages: &[PageGeometry],
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
         sig_font: Option<&signature_font::SignatureFont>,
-        sig_face: Option<&ttf_parser::Face<'_>>,
     ) -> Result<(
         Vec<super::embedded::BakedStream>,
         std::collections::BTreeSet<ObjectId>,
     )> {
-        let shared_sig_font = sig_font
-            .zip(sig_face)
-            .map(|(font, face)| font.embed(doc, face));
+        let shared_sig_font = sig_font.map(|font| font.embed(doc));
         let mut touched = std::collections::BTreeSet::new();
         let mut baked = Vec::with_capacity(by_page.len());
         for (page, boxes) in by_page {
-            let page_id = page_ids[*page];
-            let page_box = boxes_pt[*page];
-            let rotate = rotations[*page];
+            // `bake_and_save` rejects out-of-range pages before baking,
+            // so this is a caller bug, not a box to silently drop.
+            let Some(geom) = pages.get(*page) else {
+                bail!(
+                    "overlay box is on page {} but the document has {} page(s)",
+                    page + 1,
+                    pages.len()
+                );
+            };
+            let page_id = geom.id;
             let needs_text = boxes.iter().any(|item| item.kind == BoxKind::Text);
             let needs_sig = boxes.iter().any(|item| item.kind == BoxKind::Signature);
             let text_alias = needs_text
                 .then(|| Self::ensure_helvetica(doc, page_id, &mut touched))
                 .transpose()?;
-            let sig_alias =
-                if needs_sig && let (Some(_), Some(type0_id)) = (sig_font, shared_sig_font) {
-                    Some(Self::ensure_signature(
-                        doc,
-                        page_id,
-                        type0_id,
-                        &mut touched,
-                    )?)
-                } else {
-                    None
-                };
+            let sig_alias = if needs_sig && let Some(type0_id) = shared_sig_font {
+                Some(Self::ensure_signature(
+                    doc,
+                    page_id,
+                    type0_id,
+                    &mut touched,
+                )?)
+            } else {
+                None
+            };
             let mut operations = Vec::new();
             for &item in boxes {
                 match item.kind {
                     BoxKind::Text => {
                         if let Some(alias) = text_alias.as_ref() {
-                            operations.extend(box_operations(item, alias, page_box, rotate, None));
+                            operations.extend(box_operations(item, alias, geom, None));
                         }
                     }
                     BoxKind::Signature => {
                         if let (Some(alias), Some(font)) = (sig_alias.as_ref(), sig_font) {
-                            operations.extend(box_operations(
-                                item,
-                                alias,
-                                page_box,
-                                rotate,
-                                Some(font),
-                            ));
+                            operations.extend(box_operations(item, alias, geom, Some(font)));
                         }
                     }
                 }
@@ -93,19 +89,11 @@ impl PdfDoc {
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
         baked_boxes: &[OverlayText],
         sig_font: Option<&signature_font::SignatureFont>,
-        sig_face: Option<&ttf_parser::Face<'_>>,
         out: &Path,
     ) -> Result<Vec<u8>> {
         let max_id_before = self.doc.max_id;
-        let (baked_streams, mut touched) = Self::bake_pages(
-            &mut self.doc,
-            &self.page_ids,
-            &self.boxes_pt,
-            &self.rotations,
-            by_page,
-            sig_font,
-            sig_face,
-        )?;
+        let (baked_streams, mut touched) =
+            Self::bake_pages(&mut self.doc, &self.pages, by_page, sig_font)?;
         // Embed the just-baked boxes and their streams' ids and
         // hashes so the saved file reopens editable; part of the
         // same update, so payload and baked streams always land in

@@ -2,6 +2,7 @@
 
 mod app;
 mod cli;
+mod geometry;
 mod overlay;
 mod pdf;
 mod render;

@@ -198,8 +198,9 @@ impl TypewriterApp {
                         );
                     }
                     if let Some(doc) = &self.pdf_doc
-                        && let Some((w, h)) = doc.sizes_pt.get(self.page)
+                        && let Some(geom) = doc.pages.get(self.page)
                     {
+                        let (w, h) = geom.display_size();
                         pill(ui, format!("{w:.0} × {h:.0} pt"));
                     }
                     pill(ui, format!("{:.0}%", self.zoom * 100.0));

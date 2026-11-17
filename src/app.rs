@@ -474,8 +474,8 @@ impl TypewriterApp {
     fn page_size_pt(&self, page: usize) -> (f32, f32) {
         self.pdf_doc
             .as_ref()
-            .and_then(|doc| doc.sizes_pt.get(page).copied())
-            .unwrap_or((612.0, 792.0))
+            .and_then(|doc| doc.pages.get(page).or(doc.pages.first()))
+            .map_or((612.0, 792.0), crate::geometry::PageGeometry::display_size)
     }
 
     /// Duplicate the selected box in place, leaving the clipboard alone.

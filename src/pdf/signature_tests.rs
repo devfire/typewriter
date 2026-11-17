@@ -2,6 +2,7 @@
 
 use super::tests::fixture_pdf;
 use super::{PdfDoc, signature_font};
+use crate::geometry::{PageGeometry, PageRect, Rotation};
 use crate::overlay::{BoxKind, OverlayState};
 use crate::test_util::TempFile;
 use lopdf::{Document, Object, ObjectId, dictionary};
@@ -19,7 +20,6 @@ fn is_subset_tagged_momo(name: &[u8]) -> bool {
 /// Every font name (`/BaseFont` on the `Type0` and `CIDFont` dicts,
 /// `/FontName` on the descriptor) embedded for one signature text.
 fn embedded_font_names(text: &str) -> Vec<Vec<u8>> {
-    let face = signature_font::face().unwrap();
     let mut item = crate::overlay::OverlayText::new(
         crate::overlay::BoxId::default(),
         0,
@@ -28,9 +28,9 @@ fn embedded_font_names(text: &str) -> Vec<Vec<u8>> {
         BoxKind::Signature,
     );
     item.text = text.to_string();
-    let font = signature_font::SignatureFont::prepare(&face, &[&item]).unwrap();
+    let font = signature_font::SignatureFont::prepare(&[&item]).unwrap();
     let mut doc = Document::new();
-    font.embed(&mut doc, &face);
+    font.embed(&mut doc);
     let mut names = Vec::new();
     for dict in doc.objects.values().filter_map(|obj| obj.as_dict().ok()) {
         for key in [b"BaseFont".as_slice(), b"FontName".as_slice()] {
@@ -158,10 +158,14 @@ fn multi_page_signature_bake_embeds_font_program_once() {
         render_bytes: Arc::new(Vec::new()),
         embedded: None,
         doc,
-        page_ids,
-        sizes_pt: vec![(612.0, 792.0); 2],
-        boxes_pt: vec![(0.0, 0.0, 612.0, 792.0); 2],
-        rotations: vec![0; 2],
+        pages: page_ids
+            .iter()
+            .map(|id| PageGeometry {
+                id: *id,
+                rect: PageRect::new(0.0, 0.0, 612.0, 792.0),
+                rotation: Rotation::R0,
+            })
+            .collect(),
         dirty: std::collections::BTreeSet::new(),
     };
     let mut overlays = OverlayState::default();
@@ -188,8 +192,8 @@ fn multi_page_signature_bake_embeds_font_program_once() {
     assert_eq!(descriptors, 1, "font descriptor embedded per page");
     // Both pages reference a subset-tagged Momo font and extract
     // their signature.
-    for page_id in &pdf.page_ids {
-        let fonts = pdf.doc.get_page_fonts(*page_id).unwrap();
+    for geom in &pdf.pages {
+        let fonts = pdf.doc.get_page_fonts(geom.id).unwrap();
         assert!(
             fonts.values().any(|font| font
                 .get(b"BaseFont")
@@ -272,7 +276,6 @@ fn reloaded_signature_bake_adds_fresh_subset_font() {
 
 #[test]
 fn signature_encode_uses_two_byte_subset_glyph_ids() {
-    let face = signature_font::face().unwrap();
     let mut item = crate::overlay::OverlayText::new(
         crate::overlay::BoxId::default(),
         0,
@@ -281,7 +284,7 @@ fn signature_encode_uses_two_byte_subset_glyph_ids() {
         BoxKind::Signature,
     );
     item.text = "Ab".to_string();
-    let font = signature_font::SignatureFont::prepare(&face, &[&item]).unwrap();
+    let font = signature_font::SignatureFont::prepare(&[&item]).unwrap();
     assert!(
         font.subset_len() < crate::signature::FONT_BYTES.len() / 10,
         "subset is not small: {}",

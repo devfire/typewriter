@@ -138,6 +138,10 @@ fn subset_name(old_ids: &[u16]) -> String {
 /// `.notdef`), so encoding, `/W` widths, and `ToUnicode` are all
 /// keyed by subset glyph id, never by original glyph id.
 pub(super) struct SignatureFont {
+    /// Parsed Momo face over [`FONT_BYTES`], which is `'static`: the font
+    /// owns it, so a bake needs only `Option<&SignatureFont>` and the
+    /// paired-`Option` (`sig_font` plus `sig_face`) state goes away.
+    face: Face<'static>,
     /// Tagged font name (`ABCDEF+MomoSignature`; see `subset_name`).
     name: String,
     /// Source char -> glyph id in the subset.
@@ -152,8 +156,9 @@ impl SignatureFont {
     /// Subset the embedded Momo font to the glyphs used by `boxes`
     /// (which must be every signature box in the bake, so one subset
     /// serves all signed pages).
-    pub(super) fn prepare(face: &Face<'_>, boxes: &[&OverlayText]) -> Result<Self> {
-        let used_old = used_glyphs(face, boxes);
+    pub(super) fn prepare(boxes: &[&OverlayText]) -> Result<Self> {
+        let face = face()?;
+        let used_old = used_glyphs(&face, boxes);
         let old_ids: Vec<u16> = used_old.keys().copied().collect();
         // Sorted so subset glyph ids are deterministic for a bake.
         let remapper = GlyphRemapper::new_from_glyphs_sorted(&old_ids);
@@ -165,7 +170,7 @@ impl SignatureFont {
                 // Every glyph in `used_old` was remapped above; a
                 // glyph missing from the remapper can only be
                 // `.notdef`, which the remapper always keeps at 0.
-                let new = remapper.get(glyph_id(face, c)).unwrap_or(0);
+                let new = remapper.get(glyph_id(&face, c)).unwrap_or(0);
                 encoding.entry(c).or_insert(new);
             }
         }
@@ -174,6 +179,7 @@ impl SignatureFont {
             .map(|(old, (c, width))| (remapper.get(*old).unwrap_or(0), (*c, *width)))
             .collect();
         Ok(Self {
+            face,
             name: subset_name(&old_ids),
             encoding,
             used,
@@ -211,8 +217,8 @@ impl SignatureFont {
     /// Callers insert the id into each signed page's resources (see
     /// `super::insert_font_entry`); the subset is embedded exactly
     /// once per bake, however many pages are signed.
-    pub(super) fn embed(&self, doc: &mut Document, face: &Face<'_>) -> ObjectId {
-        let bbox = face.global_bounding_box();
+    pub(super) fn embed(&self, doc: &mut Document) -> ObjectId {
+        let bbox = self.face.global_bounding_box();
         let font_stream = Stream::new(
             dictionary! { "Length1" => i64::try_from(self.subset.len()).unwrap_or(i64::MAX) },
             self.subset.clone(),
@@ -229,9 +235,9 @@ impl SignatureFont {
                 i64::from(bbox.y_max).into(),
             ],
             "ItalicAngle" => 0,
-            "Ascent" => i64::from(face.ascender()),
-            "Descent" => i64::from(face.descender()),
-            "CapHeight" => i64::from(face.capital_height().unwrap_or(face.ascender())),
+            "Ascent" => i64::from(self.face.ascender()),
+            "Descent" => i64::from(self.face.descender()),
+            "CapHeight" => i64::from(self.face.capital_height().unwrap_or(self.face.ascender())),
             "StemV" => 80,
             "FontFile2" => Object::Reference(font_file_id),
         });

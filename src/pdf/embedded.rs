@@ -56,6 +56,7 @@
 //! and hashes is indistinguishable from a genuine bake, by
 //! construction.
 
+use crate::geometry::PageGeometry;
 use crate::overlay::{BoxId, BoxKind, OverlayText};
 use anyhow::{Context, Result, bail};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
@@ -352,10 +353,11 @@ pub(super) fn extract(doc: &Document, page_count: usize) -> Option<Embedded> {
 /// with no recorded overlay, is a divergence: stripping it (or
 /// its surviving half) on faith could unbalance the `q`/`Q`
 /// nesting of content that stays.
-pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded) -> bool {
+pub(super) fn verify(doc: &Document, pages: &[PageGeometry], embedded: &Embedded) -> bool {
     let expected: BTreeMap<usize, &ExpectedStream> =
         embedded.streams.iter().map(|s| (s.page, s)).collect();
-    for (page, &page_id) in page_ids.iter().enumerate() {
+    for (page, geom) in pages.iter().enumerate() {
+        let page_id = geom.id;
         let contents = doc.get_page_contents(page_id);
         let expected_here = expected.get(&page);
         // Decode once: overlay recognition (prefix + hash) runs before
@@ -452,12 +454,13 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
 /// they may be the page's own content.
 pub(super) fn strip_verified(
     doc: &mut Document,
-    page_ids: &[ObjectId],
+    pages: &[PageGeometry],
     embedded: &Embedded,
 ) -> Vec<ObjectId> {
     let doomed: HashSet<ObjectId> = embedded.streams.iter().map(|s| s.id).collect();
     let mut changed = Vec::new();
-    for &page_id in page_ids {
+    for geom in pages {
+        let page_id = geom.id;
         let contents = doc.get_page_contents(page_id);
         let Some(overlay_at) = contents.iter().position(|id| doomed.contains(id)) else {
             continue;

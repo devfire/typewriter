@@ -57,7 +57,7 @@ fn saved_boxes_reopen_with_all_fields_and_no_baked_copy_underneath() {
 
     // The baked streams are un-referenced in the opened document
     // and absent from the bytes the preview renders.
-    assert!(pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty());
+    assert!(pdf.doc.get_page_contents(pdf.pages[0].id).is_empty());
     let rendered = Document::load_mem(&pdf.render_bytes).unwrap();
     assert!(!rendered.extract_text(&[1]).unwrap().contains("Jane Doe"));
 }
@@ -229,7 +229,7 @@ fn assert_not_restored_and_not_stripped(path: &std::path::Path) {
     let mut pdf = PdfDoc::open(path).unwrap();
     assert!(pdf.take_embedded_boxes().is_empty(), "boxes restored");
     assert!(
-        !pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty(),
+        !pdf.doc.get_page_contents(pdf.pages[0].id).is_empty(),
         "baked stream was stripped"
     );
 }
@@ -345,7 +345,7 @@ fn baked_fixture_with_content() -> (TempFile, Vec<u8>) {
         .doc
         .add_object(Stream::new(lopdf::Dictionary::new(), original.clone()));
     pdf.doc
-        .get_dictionary_mut(pdf.page_ids[0])
+        .get_dictionary_mut(pdf.pages[0].id)
         .unwrap()
         .set("Contents", Object::Reference(original_id));
     let mut overlays = OverlayState::default();
@@ -373,7 +373,7 @@ fn repeated_edit_save_cycles_do_not_pile_up_wrappers() {
         assert_eq!(overlays.items.len(), 1, "cycle {cycle}: boxes lost");
         // Claiming stripped the overlay *and* its wrapper pair:
         // only the pre-existing stream remains.
-        let remaining = pdf.doc.get_page_contents(pdf.page_ids[0]);
+        let remaining = pdf.doc.get_page_contents(pdf.pages[0].id);
         assert_eq!(remaining.len(), 1, "cycle {cycle}: wrappers left behind");
         pdf.bake_and_save(&mut overlays, out.path()).unwrap();
         let streams = page_stream_bytes(out.path());
@@ -401,7 +401,7 @@ fn claimed_render_bytes_are_backing_bytes_plus_small_page_update() {
         .doc
         .add_object(Stream::new(lopdf::Dictionary::new(), original));
     pdf.doc
-        .get_dictionary_mut(pdf.page_ids[0])
+        .get_dictionary_mut(pdf.pages[0].id)
         .unwrap()
         .set("Contents", Object::Reference(original_id));
     let mut overlays = OverlayState::default();
@@ -465,7 +465,7 @@ fn legacy_unmarked_wrapper_pair_is_stripped_with_its_overlay() {
 
     let mut pdf = PdfDoc::open(out.path()).unwrap();
     assert_eq!(pdf.take_embedded_boxes().len(), 1);
-    let remaining = pdf.doc.get_page_contents(pdf.page_ids[0]);
+    let remaining = pdf.doc.get_page_contents(pdf.pages[0].id);
     assert_eq!(remaining.len(), 1, "legacy wrappers left behind");
     let plain = pdf
         .doc
@@ -524,7 +524,7 @@ fn wrap_marker_in_preexisting_content_does_not_void_payload() {
         .doc
         .add_object(Stream::new(lopdf::Dictionary::new(), original.clone()));
     pdf.doc
-        .get_dictionary_mut(pdf.page_ids[0])
+        .get_dictionary_mut(pdf.pages[0].id)
         .unwrap()
         .set("Contents", Object::Reference(original_id));
     let mut overlays = OverlayState::default();
@@ -551,7 +551,7 @@ fn oversized_text_fails_save_and_boundary_round_trips() {
     // Nothing baked, nothing cleared, nothing written.
     assert_eq!(overlays.items.len(), 1);
     assert!(overlays.is_dirty());
-    assert!(pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty());
+    assert!(pdf.doc.get_page_contents(pdf.pages[0].id).is_empty());
     assert!(!out.path().exists());
 
     // Exactly at the reader limit: saves and restores whole.
@@ -572,7 +572,7 @@ fn oversized_text_fails_save_and_boundary_round_trips() {
     let id = overlays.add(0, 72.0, 200.0, BoxKind::Text);
     overlays.item_mut(id).unwrap().text = "b".repeat(100_001);
     let bytes_before = std::fs::read(out.path()).unwrap();
-    let contents_before = pdf.doc.get_page_contents(pdf.page_ids[0]).len();
+    let contents_before = pdf.doc.get_page_contents(pdf.pages[0].id).len();
     let err = pdf.bake_and_save(&mut overlays, out.path()).unwrap_err();
     assert!(err.to_string().contains("100000"), "unexpected: {err:#}");
     assert_eq!(std::fs::read(out.path()).unwrap(), bytes_before);
@@ -581,7 +581,7 @@ fn oversized_text_fails_save_and_boundary_round_trips() {
     // Rejected before baking anything, so the stripped document
     // is untouched and the retry bakes exactly once.
     assert_eq!(
-        pdf.doc.get_page_contents(pdf.page_ids[0]).len(),
+        pdf.doc.get_page_contents(pdf.pages[0].id).len(),
         contents_before
     );
     // Shortening the box makes the retry succeed.
@@ -614,7 +614,7 @@ fn too_many_boxes_fail_save_and_boundary_round_trips() {
         "unexpected: {err:#}"
     );
     assert_eq!(overlays.items.len(), 10_001);
-    assert!(pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty());
+    assert!(pdf.doc.get_page_contents(pdf.pages[0].id).is_empty());
     assert!(!out.path().exists());
 
     overlays.items.pop();
