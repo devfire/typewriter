@@ -136,6 +136,49 @@ impl PdfDoc {
         Ok(saved)
     }
 
+    /// Render bytes after baked streams were stripped from `doc`:
+    /// the backing bytes verbatim plus an incremental update
+    /// carrying only the changed page dictionaries, exactly like a
+    /// save but held in memory for the preview. Re-serializing the
+    /// whole document instead (the old `doc.save_to`) would copy
+    /// and recompress every stream of a large scanned file just to
+    /// open it, and the preview would render lopdf's rewrite of
+    /// the file rather than the file itself. `None` when there is
+    /// nothing to append or the update cannot be written; the
+    /// caller then keeps rendering the backing bytes.
+    pub(super) fn render_bytes_with_page_updates(
+        &self,
+        changed_pages: &[ObjectId],
+    ) -> Option<Vec<u8>> {
+        if changed_pages.is_empty() || self.bytes.is_empty() {
+            return None;
+        }
+        // `IncrementalDocument`'s writer emits the previous bytes
+        // verbatim and reads only trailer, xref position/type,
+        // and max id from the previous document (`new_from_prev`
+        // discards its objects), so a metadata-only stand-in for
+        // the pre-strip document suffices — no second parse of
+        // the backing bytes, and no object graph cloned.
+        let mut prev = Document::new();
+        prev.version.clone_from(&self.doc.version);
+        prev.binary_mark.clone_from(&self.doc.binary_mark);
+        prev.trailer.clone_from(&self.doc.trailer);
+        prev.reference_table =
+            lopdf::xref::Xref::new(0, self.doc.reference_table.cross_reference_type);
+        prev.max_id = self.doc.max_id;
+        prev.max_bookmark_id = self.doc.max_bookmark_id;
+        prev.xref_start = self.doc.xref_start;
+        let mut update = IncrementalDocument::create_from((*self.bytes).clone(), prev);
+        for &page_id in changed_pages {
+            let page = self.doc.get_object(page_id).ok()?.clone();
+            update.new_document.set_object(page_id, page);
+        }
+        update.new_document.max_id = update.new_document.max_id.max(self.doc.max_id);
+        let mut rendered = Vec::with_capacity(self.bytes.len());
+        update.save_to(&mut rendered).ok()?;
+        (!rendered.is_empty()).then_some(rendered)
+    }
+
     /// Write `bytes` to `out` without ever truncating `out` in place.
     ///
     /// The bytes are written to a unique temp file in the same

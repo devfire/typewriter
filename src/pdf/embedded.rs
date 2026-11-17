@@ -335,6 +335,9 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
 /// Remove exactly the verified baked streams from every page's
 /// `/Contents`. Must only be called after [`verify`] returned
 /// true for the same document; it trusts `embedded` blindly.
+/// Returns the ids of pages whose dictionary changed, so the
+/// caller can persist or render the removal as an incremental
+/// update carrying only those dictionaries.
 ///
 /// A bake's `q`/`Q` wrappers go with its overlay, as a pair:
 /// leaving them behind would nest one more balanced but useless
@@ -347,8 +350,13 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
 /// prepended and appended around all pre-existing content. Any
 /// other shape (no wrappers, a lone half) keeps its streams:
 /// they may be the page's own content.
-pub(super) fn strip_verified(doc: &mut Document, page_ids: &[ObjectId], embedded: &Embedded) {
+pub(super) fn strip_verified(
+    doc: &mut Document,
+    page_ids: &[ObjectId],
+    embedded: &Embedded,
+) -> Vec<ObjectId> {
     let doomed: HashSet<ObjectId> = embedded.streams.iter().map(|s| s.id).collect();
+    let mut changed = Vec::new();
     for &page_id in page_ids {
         let contents = doc.get_page_contents(page_id);
         let Some(overlay_at) = contents.iter().position(|id| doomed.contains(id)) else {
@@ -394,7 +402,9 @@ pub(super) fn strip_verified(doc: &mut Document, page_ids: &[ObjectId], embedded
                 Object::Array(kept.iter().map(|id| Object::Reference(*id)).collect()),
             ),
         }
+        changed.push(page_id);
     }
+    changed
 }
 
 /// Decompressed contents of stream `id`, bounded by

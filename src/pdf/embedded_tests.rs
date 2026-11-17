@@ -383,6 +383,62 @@ fn repeated_edit_save_cycles_do_not_pile_up_wrappers() {
 }
 
 #[test]
+fn claimed_render_bytes_are_backing_bytes_plus_small_page_update() {
+    // A large pre-existing stream: a full re-serialization for
+    // the preview would re-emit (and recompress) it on open; an
+    // incremental render update must not.
+    let (mut pdf, out) = fixture_pdf();
+    let mut original = b"%".to_vec();
+    original.extend(std::iter::repeat_n(b'P', 100_000));
+    original.extend_from_slice(b"\n0 0 m\n");
+    let original_id = pdf
+        .doc
+        .add_object(Stream::new(lopdf::Dictionary::new(), original));
+    pdf.doc
+        .get_dictionary_mut(pdf.page_ids[0])
+        .unwrap()
+        .set("Contents", Object::Reference(original_id));
+    let mut overlays = OverlayState::default();
+    let text = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(text).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+
+    let backing = std::fs::read(out.path()).unwrap();
+    let mut pdf = PdfDoc::open(out.path()).unwrap();
+    assert_eq!(pdf.take_embedded_boxes().len(), 1);
+
+    // The actual file, verbatim, then only the update: no second
+    // copy of the large stream (or the baked overlay) in the tail.
+    assert!(
+        pdf.render_bytes.starts_with(&backing),
+        "render bytes do not start with the file bytes"
+    );
+    let tail = &pdf.render_bytes[backing.len()..];
+    assert!(
+        tail.len() < 4_096,
+        "render update too large: {}",
+        tail.len()
+    );
+    assert!(
+        !tail.windows(64).any(|w| w.iter().all(|&b| b == b'P')),
+        "pre-existing stream re-emitted in render update"
+    );
+    assert!(
+        !tail
+            .windows(OVERLAY_MARKER.len())
+            .any(|w| w == OVERLAY_MARKER),
+        "baked overlay re-emitted in render update"
+    );
+
+    // The render bytes still parse as the stripped document: the
+    // pre-existing stream survives, the baked copy is gone.
+    let rendered = Document::load_mem(&pdf.render_bytes).unwrap();
+    assert!(!rendered.extract_text(&[1]).unwrap().contains("Hello"));
+    let page_id = *rendered.get_pages().values().next().unwrap();
+    assert_eq!(rendered.get_page_contents(page_id).len(), 1);
+}
+
+#[test]
 fn legacy_unmarked_wrapper_pair_is_stripped_with_its_overlay() {
     // Rewrite a marked bake's wrappers to the pre-marking bytes,
     // as in a version 2 file: the pair in the written positions

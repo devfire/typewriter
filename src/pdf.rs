@@ -33,10 +33,11 @@ pub struct PdfDoc {
     /// Bytes hayro should render. Identical to `bytes` until the
     /// embedded boxes are claimed via `take_embedded_boxes`: then
     /// the baked overlay streams are stripped from `doc` (see
-    /// `embedded`) and this is that stripped document,
-    /// re-serialized, so the preview shows each restored box once
-    /// instead of over its baked copy. Never saved; saves stay
-    /// incremental on `bytes`.
+    /// `embedded`) and this is `bytes` plus an incremental update
+    /// carrying only the changed page dictionaries, so the
+    /// preview shows each restored box once instead of over its
+    /// baked copy — and renders the actual file everywhere else.
+    /// Never saved; saves stay incremental on `bytes`.
     pub render_bytes: Arc<Vec<u8>>,
     /// Decoded `/Typewriter` catalog payload, not yet verified
     /// against the document's streams. Claimed (and verified) by
@@ -118,13 +119,14 @@ impl PdfDoc {
     /// any mismatch this returns no boxes and strips nothing, so
     /// the document stays exactly a plain baked PDF. On success
     /// the verified streams are un-referenced in `doc` and
-    /// `render_bytes` is re-derived from the stripped document, so
-    /// the boxes render once (as live overlays, owned by the
-    /// caller's `OverlayState`) and a later save re-bakes them
-    /// instead of duplicating the old text. The file on disk is
-    /// untouched until that save, whose incremental diff then
-    /// persists the removal. The app calls this once, right after
-    /// opening.
+    /// `render_bytes` becomes the backing bytes plus an
+    /// incremental update with only the changed page dictionaries
+    /// (see `render_bytes_with_page_updates`), so the boxes render
+    /// once (as live overlays, owned by the caller's
+    /// `OverlayState`) and a later save re-bakes them instead of
+    /// duplicating the old text. The file on disk is untouched
+    /// until that save, whose incremental diff then persists the
+    /// removal. The app calls this once, right after opening.
     pub fn take_embedded_boxes(&mut self) -> Vec<OverlayText> {
         let Some(embedded) = self.embedded.take() else {
             return Vec::new();
@@ -132,14 +134,13 @@ impl PdfDoc {
         if !embedded::verify(&self.doc, &self.page_ids, &embedded) {
             return Vec::new();
         }
-        embedded::strip_verified(&mut self.doc, &self.page_ids, &embedded);
-        let mut rendered = Vec::new();
-        if self.doc.save_to(&mut rendered).is_ok() && !rendered.is_empty() {
+        let changed_pages = embedded::strip_verified(&mut self.doc, &self.page_ids, &embedded);
+        if let Some(rendered) = self.render_bytes_with_page_updates(&changed_pages) {
             self.render_bytes = Arc::new(rendered);
         }
-        // On serialization failure `render_bytes` stays as the
-        // baked bytes: the preview draws boxes over their copies
-        // rather than failing to open.
+        // If the update cannot be written `render_bytes` stays as
+        // the baked bytes: the preview draws boxes over their
+        // copies rather than failing to open.
         embedded.boxes
     }
 

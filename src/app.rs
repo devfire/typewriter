@@ -203,10 +203,11 @@ impl TypewriterApp {
             }
         };
         // Claim any embedded boxes before rendering: claiming
-        // strips their baked streams and re-derives `render_bytes`
-        // from the stripped document, so each restored box renders
-        // once, as the live overlay. Shares the single
-        // `Arc<Vec<u8>>` allocation with `PdfDoc`.
+        // strips their baked streams and makes `render_bytes` the
+        // file bytes plus an incremental update with the changed
+        // page dictionaries, so each restored box renders once, as
+        // the live overlay. Shares the single `Arc<Vec<u8>>`
+        // allocation with `PdfDoc`.
         let restored = doc.take_embedded_boxes();
         let restored_count = restored.len();
         let hayro_pdf = match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.render_bytes)) {
