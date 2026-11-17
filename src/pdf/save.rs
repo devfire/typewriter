@@ -21,6 +21,8 @@ static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 impl PdfDoc {
     /// Bake `by_page` into `doc`: embed the shared signature font
     /// (once) and append one overlay content stream per page.
+    /// Returns the streams added, for the embedded payload that
+    /// records their ids and hashes (see `embedded::store`).
     pub(super) fn bake_pages(
         doc: &mut Document,
         page_ids: &[ObjectId],
@@ -29,10 +31,11 @@ impl PdfDoc {
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
         sig_font: Option<&signature_font::SignatureFont>,
         sig_face: Option<&ttf_parser::Face<'_>>,
-    ) -> Result<()> {
+    ) -> Result<Vec<super::embedded::BakedStream>> {
         let shared_sig_font = sig_font
             .zip(sig_face)
             .map(|(font, face)| font.embed(doc, face));
+        let mut baked = Vec::with_capacity(by_page.len());
         for (page, boxes) in by_page {
             let page_id = page_ids[*page];
             let page_box = boxes_pt[*page];
@@ -62,10 +65,11 @@ impl PdfDoc {
                     operations.extend(box_operations(item, &alias, page_box, rotate, Some(font)));
                 }
             }
-            append_overlay_stream(doc, page_id, operations)
+            let id = append_overlay_stream(doc, page_id, operations)
                 .context("failed to append overlay content stream")?;
+            baked.push(super::embedded::BakedStream { page: *page, id });
         }
-        Ok(())
+        Ok(baked)
     }
 
     /// Bake into `self.doc` and serialize only the resulting update:
@@ -80,7 +84,7 @@ impl PdfDoc {
         sig_face: Option<&ttf_parser::Face<'_>>,
         out: &Path,
     ) -> Result<Vec<u8>> {
-        Self::bake_pages(
+        let baked_streams = Self::bake_pages(
             &mut self.doc,
             &self.page_ids,
             &self.boxes_pt,
@@ -89,10 +93,11 @@ impl PdfDoc {
             sig_font,
             sig_face,
         )?;
-        // Embed the just-baked boxes so the saved file reopens
-        // editable; part of the same diff, so payload and baked
-        // streams always land in the same incremental revision.
-        super::embedded::store(&mut self.doc, baked_boxes)?;
+        // Embed the just-baked boxes and their streams' ids and
+        // hashes so the saved file reopens editable; part of the
+        // same diff, so payload and baked streams always land in
+        // the same incremental revision.
+        super::embedded::store(&mut self.doc, baked_boxes, &baked_streams)?;
         // The previous revision, re-parsed from the untouched bytes:
         // the diff against it is exactly this update's object set.
         // Changed pre-existing objects are always dictionaries (page,

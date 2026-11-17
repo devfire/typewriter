@@ -3835,6 +3835,7 @@ dependencies = [
  "hayro",
  "lopdf",
  "rfd",
+ "sha2",
  "subsetter",
  "ttf-parser",
 ]

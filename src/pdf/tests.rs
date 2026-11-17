@@ -285,7 +285,7 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, TempFile) {
     let pdf = PdfDoc {
         bytes: Arc::new(Vec::new()),
         render_bytes: Arc::new(Vec::new()),
-        embedded_boxes: Vec::new(),
+        embedded: None,
         doc,
         page_ids: vec![page_id],
         sizes_pt: vec![size],

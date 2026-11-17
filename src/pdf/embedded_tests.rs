@@ -5,7 +5,9 @@ use super::tests::fixture_pdf;
 use super::PdfDoc;
 use crate::overlay::{BoxKind, OverlayState};
 use crate::test_util::TempFile;
-use lopdf::{Document, Object, dictionary};
+use lopdf::{Document, Object, ObjectId, Stream, dictionary};
+
+use super::embedded::OVERLAY_MARKER;
 
 /// Bake one text box (with a character `WinAnsi` cannot represent,
 /// a custom size/color/width) and one signature box into `out`.
@@ -151,19 +153,35 @@ fn box_dict(page: i64, text: Object) -> Object {
     .into()
 }
 
+fn stream_dict(page: i64) -> Object {
+    dictionary! {
+        "Page" => Object::Integer(page),
+        "Obj" => Object::Integer(1),
+        "Gen" => Object::Integer(0),
+        "Sha256" => Object::String(vec![b'0'; 64], lopdf::StringFormat::Literal),
+    }
+    .into()
+}
+
 #[test]
 fn forged_or_newer_payloads_are_ignored_not_fatal() {
     // No BOM: the decoder's UTF-8 path for hand-written payloads.
     let valid_text = Object::String(b"Hello".to_vec(), lopdf::StringFormat::Literal);
     for payload in [
         // Newer schema version: open as a plain baked PDF.
-        dictionary! { "Version" => 99_i64, "Boxes" => vec![box_dict(1, valid_text.clone())] }.into(),
+        dictionary! { "Version" => 99_i64, "Boxes" => vec![box_dict(1, valid_text.clone())], "Streams" => vec![stream_dict(1)] }.into(),
+        // Legacy version 1, which carried no stream hashes and so
+        // cannot be verified: also ignored.
+        dictionary! { "Version" => 1_i64, "Boxes" => vec![box_dict(1, valid_text.clone())] }.into(),
         // Box on a page the document does not have.
-        dictionary! { "Version" => 1_i64, "Boxes" => vec![box_dict(99, valid_text.clone())] }.into(),
+        dictionary! { "Version" => 2_i64, "Boxes" => vec![box_dict(99, valid_text.clone())], "Streams" => vec![stream_dict(99)] }.into(),
+        // Stream recorded for a page with no boxes.
+        dictionary! { "Version" => 2_i64, "Boxes" => vec![box_dict(1, valid_text.clone())], "Streams" => vec![stream_dict(2)] }.into(),
         // Truncated UTF-16BE text (odd byte count after the BOM).
         dictionary! {
-            "Version" => 1_i64,
+            "Version" => 2_i64,
             "Boxes" => vec![box_dict(1, Object::String(vec![0xFE, 0xFF, 0x00], lopdf::StringFormat::Hexadecimal))],
+            "Streams" => vec![stream_dict(1)],
         }
         .into(),
         // Not even a dictionary.
@@ -173,5 +191,122 @@ fn forged_or_newer_payloads_are_ignored_not_fatal() {
             restored_for_payload(payload).is_empty(),
             "payload must be ignored"
         );
+    }
+}
+
+/// Bake the standard fixture, rewrite the saved file with
+/// `mutate` applied (a full re-save, as another tool would do),
+/// and return the rewritten file.
+fn tampered(name: &str, mutate: impl FnOnce(&mut Document)) -> TempFile {
+    let source = baked_fixture();
+    let mut doc = Document::load(source.path()).unwrap();
+    mutate(&mut doc);
+    let out = TempFile::new(name);
+    doc.save(out.path()).unwrap();
+    out
+}
+
+/// Object ids of streams starting with the overlay marker.
+fn marked_ids(doc: &Document) -> Vec<ObjectId> {
+    doc.objects
+        .iter()
+        .filter_map(|(id, obj)| {
+            obj.as_stream()
+                .ok()
+                .filter(|stream| stream.content.starts_with(OVERLAY_MARKER))
+                .map(|_| *id)
+        })
+        .collect()
+}
+
+/// Assert `path` restores nothing and its baked stream survives:
+/// the payload/stream disagreement must leave the file behaving
+/// as a plain baked PDF, with the content other viewers see
+/// still in place after the claim attempt.
+fn assert_not_restored_and_not_stripped(path: &std::path::Path) {
+    let mut pdf = PdfDoc::open(path).unwrap();
+    assert!(pdf.take_embedded_boxes().is_empty(), "boxes restored");
+    assert!(
+        !pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty(),
+        "baked stream was stripped"
+    );
+}
+
+#[test]
+fn edited_baked_stream_is_not_restored_or_stripped() {
+    // Another tool touched the baked text after the save: the
+    // recorded hash no longer matches, so the (stale) payload
+    // must not hide the now-current baked content.
+    let out = tampered("embedded-edited-stream", |doc| {
+        for id in marked_ids(doc) {
+            let stream = doc.get_object_mut(id).unwrap().as_stream_mut().unwrap();
+            let mut content = stream.content.clone();
+            content.extend_from_slice(b"\n% edited elsewhere\n");
+            stream.set_content(content);
+        }
+    });
+    assert!(baked_text(out.path()).contains("Jane Doe"));
+    assert_not_restored_and_not_stripped(out.path());
+}
+
+#[test]
+fn marker_prefixed_real_content_is_not_hidden() {
+    // Real page content that merely starts with the marker, under
+    // the very object id the payload records: the hash mismatch
+    // is the only thing standing between it and being stripped,
+    // and it must hold.
+    let out = tampered("embedded-forged-marker", |doc| {
+        for id in marked_ids(doc) {
+            let stream = doc.get_object_mut(id).unwrap().as_stream_mut().unwrap();
+            let mut content = OVERLAY_MARKER.to_vec();
+            content.extend_from_slice(b"BT (REAL) Tj ET\n");
+            stream.set_content(content);
+        }
+    });
+    assert_not_restored_and_not_stripped(out.path());
+}
+
+#[test]
+fn merged_baked_stream_is_not_restored_or_duplicated() {
+    // Another tool merged the page contents into a fresh stream:
+    // the recorded object id is gone from `/Contents` and the
+    // marked bytes live under a new id. Restoring the boxes here
+    // would draw them over the surviving baked copy.
+    let out = tampered("embedded-merged-stream", |doc| {
+        let page_id = *doc.get_pages().values().next().unwrap();
+        let marked = marked_ids(doc);
+        assert_eq!(marked.len(), 1);
+        let plain = doc
+            .get_object(marked[0])
+            .unwrap()
+            .as_stream()
+            .unwrap()
+            .get_plain_content()
+            .unwrap();
+        let merged_id = doc.add_object(Stream::new(lopdf::Dictionary::new(), plain));
+        doc.get_dictionary_mut(page_id)
+            .unwrap()
+            .set("Contents", Object::Reference(merged_id));
+    });
+    assert_not_restored_and_not_stripped(out.path());
+}
+
+#[test]
+fn tampered_payload_hash_or_object_id_is_not_trusted() {
+    for (name, key, value) in [
+        ("embedded-bad-hash", "Sha256", Object::String(vec![b'0'; 64], lopdf::StringFormat::Literal)),
+        ("embedded-bad-obj", "Obj", Object::Integer(999_999)),
+    ] {
+        let out = tampered(name, |doc| {
+            let catalog = doc.catalog_mut().unwrap();
+            let payload = catalog
+                .get_mut(b"Typewriter")
+                .unwrap()
+                .as_dict_mut()
+                .unwrap();
+            let streams = payload.get_mut(b"Streams").unwrap().as_array_mut().unwrap();
+            streams[0].as_dict_mut().unwrap().set(key, value);
+        });
+        assert_not_restored_and_not_stripped(out.path());
     }
 }

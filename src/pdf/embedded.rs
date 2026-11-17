@@ -3,61 +3,138 @@
 //! Baking flattens each box into a page content stream, which alone
 //! is not editable: the box's page, position, size, color, width,
 //! and text (before `WinAnsi` lossy encoding) exist only in the
-//! overlay. So every save also stores the baked boxes as plain PDF
-//! objects under a `/Typewriter` key in the document catalog, and
-//! every overlay content stream starts with [`OVERLAY_MARKER`].
+//! overlay. So every save also stores, as plain PDF objects under
+//! a `/Typewriter` key in the document catalog:
+//!
+//! - the baked boxes, and
+//! - for each baked overlay stream, its page, its object id, and
+//!   the SHA-256 of its decompressed contents, recorded at bake
+//!   time when the stream's bytes are known to be this app's own.
+//!
 //! Other viewers ignore the catalog key and render the baked
 //! streams normally.
 //!
-//! When the app claims the payload on open (`take_embedded_boxes`),
-//! the boxes become live overlays and the marked streams are
-//! removed from each page's `/Contents` in the in-memory document,
-//! so the preview shows the boxes once (not
-//! the baked copy underneath them) and a later save re-bakes the
-//! edited boxes instead of duplicating the old text. The removal is
-//! only persisted if that later save happens; opening alone never
-//! modifies the file. The orphaned stream objects stay in the file
-//! history, unreferenced, like any incrementally-replaced object.
+//! The payload and the streams must agree before anything trusts
+//! either. The `%TypewriterOverlay` marker alone proves nothing:
+//! any file can start a stream with it, and another tool can edit,
+//! merge, or rewrite the baked streams after the save, leaving the
+//! payload describing content that is no longer what viewers see.
+//! So claiming the payload (`take_embedded_boxes`) succeeds only
+//! if *every* recorded stream is still present on its recorded
+//! page, under its recorded object id, with its recorded hash
+//! (which also proves it still starts with the marker, since the
+//! hash covers the marker bytes), and no unrecorded marked stream
+//! exists on any page. Only then are exactly those streams
+//! un-referenced and the boxes restored as live overlays. Any
+//! mismatch — forged marker, edited or merged stream, rewired
+//! object id — and the whole payload is ignored: nothing is
+//! stripped, nothing is restored, and the file behaves as a plain
+//! baked PDF instead of hiding real content or resurrecting boxes
+//! over a baked copy that is still there.
+//!
+//! The removal is only persisted if a later save happens; opening
+//! alone never modifies the file. The orphaned stream objects stay
+//! in the file history, unreferenced, like any
+//! incrementally-replaced object.
 //!
 //! The payload is untrusted input (any PDF can carry a forged
 //! `/Typewriter` key), so decoding is all-or-nothing with bounded
 //! counts and validated fields: a malformed, oversized, or
-//! newer-version payload is ignored and the file opens as a plain
-//! baked PDF rather than failing or restoring partial state.
+//! newer-version payload is ignored rather than failing the open.
+//! The hash binds payload to streams as *recorded at save time*;
+//! it is a consistency check, not an authenticity proof — a file
+//! authored from scratch with a self-consistent payload, streams,
+//! and hashes is indistinguishable from a genuine bake, by
+//! construction.
 
 use crate::overlay::{BoxId, BoxKind, OverlayText};
 use anyhow::{Context, Result};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// First bytes of every content stream baked from overlay boxes.
-/// A PDF comment, so renderers ignore it; it lets the loader find
-/// (and un-reference) exactly the streams a bake added, without
-/// trusting object ids recorded in an earlier revision.
+/// A PDF comment, so renderers ignore it. It identifies candidate
+/// baked streams on sight, but is never trusted on its own: see
+/// the hash verification in [`verify`].
 pub(super) const OVERLAY_MARKER: &[u8] = b"%TypewriterOverlay\n";
 
 /// Catalog key holding the embedded box list.
 const CATALOG_KEY: &[u8] = b"Typewriter";
-/// Payload schema version written by [`store`]. Payloads with any
-/// other version are ignored on load, so a newer app's files still
-/// open (as uneditable baked PDFs) in an older build.
-const VERSION: i64 = 1;
+/// Payload schema version written by [`store`]. Version 1 carried
+/// no stream hashes and is deliberately not accepted: unverifiable
+/// payloads must not drive stripping. Any other version likewise
+/// opens as an uneditable baked PDF.
+const VERSION: i64 = 2;
 /// Bounds on payload decoding: a forged payload must not make the
 /// loader allocate or restore unbounded state.
 const MAX_BOXES: usize = 10_000;
 const MAX_TEXT_CHARS: usize = 100_000;
+/// Cap on a candidate stream's decompressed size during
+/// verification: real baked streams hold at most `MAX_BOXES`
+/// boxes of text, and a forged stream must not expand without
+/// bound before its hash can reject it.
+const MAX_STREAM_BYTES: usize = 32 * 1024 * 1024;
 /// Coordinates/sizes beyond any real page, rejected as corrupt.
 const MAX_POINTS: f32 = 100_000.0;
 
-/// Store `boxes` (exactly the boxes about to be baked) in `doc`'s
-/// catalog, replacing any payload from an earlier save. An empty
-/// list removes the key, so deleting every restored box and saving
-/// leaves no stale editable copy behind.
-pub(super) fn store(doc: &mut Document, boxes: &[OverlayText]) -> Result<()> {
+/// One overlay stream a bake just added: the page it was appended
+/// to and its fresh object id in the document being saved.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct BakedStream {
+    pub page: usize,
+    pub id: ObjectId,
+}
+
+/// A decoded, field-validated payload, not yet verified against
+/// the document's actual streams (see [`verify`]).
+#[derive(Debug)]
+pub(super) struct Embedded {
+    pub boxes: Vec<OverlayText>,
+    streams: Vec<ExpectedStream>,
+}
+
+/// One baked stream the payload expects to find, exactly as
+/// recorded at save time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExpectedStream {
+    page: usize,
+    id: ObjectId,
+    sha256: [u8; 32],
+}
+
+/// Store `boxes` (exactly the boxes just baked, which produced
+/// `baked`) in `doc`'s catalog, replacing any payload from an
+/// earlier save. Each baked stream's hash is computed from `doc`
+/// now, while its bytes are known-good; a stream that cannot be
+/// read back aborts the save rather than writing a payload the
+/// next open could not verify. An empty box list removes the key,
+/// so deleting every restored box and saving leaves no stale
+/// editable copy behind.
+pub(super) fn store(
+    doc: &mut Document,
+    boxes: &[OverlayText],
+    baked: &[BakedStream],
+) -> Result<()> {
     if boxes.is_empty() {
         if let Ok(catalog) = doc.catalog_mut() {
             catalog.remove(CATALOG_KEY);
         }
         return Ok(());
+    }
+    let mut stream_dicts = Vec::with_capacity(baked.len());
+    for stream in baked {
+        let plain = plain_stream(doc, stream.id)
+            .context("failed to read back baked stream for embedded payload")?;
+        let mut dict = Dictionary::new();
+        dict.set("Page", Object::Integer(i64::try_from(stream.page + 1)?));
+        dict.set("Obj", Object::Integer(i64::from(stream.id.0)));
+        dict.set("Gen", Object::Integer(i64::from(stream.id.1)));
+        dict.set(
+            "Sha256",
+            Object::String(to_hex(&Sha256::digest(&plain)), StringFormat::Literal),
+        );
+        stream_dicts.push(Object::Dictionary(dict));
     }
     let mut dicts = Vec::with_capacity(boxes.len());
     for item in boxes {
@@ -88,43 +165,118 @@ pub(super) fn store(doc: &mut Document, boxes: &[OverlayText]) -> Result<()> {
     let mut payload = Dictionary::new();
     payload.set("Version", Object::Integer(VERSION));
     payload.set("Boxes", Object::Array(dicts));
+    payload.set("Streams", Object::Array(stream_dicts));
     doc.catalog_mut()
         .context("failed to read PDF catalog for embedded boxes")?
         .set("Typewriter", Object::Dictionary(payload));
     Ok(())
 }
 
-/// Decode the embedded boxes in `doc`, if it carries a valid
-/// payload for a document of `page_count` pages. `None` means "no
-/// usable payload": no key, a foreign or newer-version value, or
-/// any field failing validation (all-or-nothing, see module docs).
-pub(super) fn extract(doc: &Document, page_count: usize) -> Option<Vec<OverlayText>> {
+/// Decode and field-validate the payload in `doc`, for a document
+/// of `page_count` pages. `None` means "no usable payload": no
+/// key, a foreign or other-version value, or any field failing
+/// validation (all-or-nothing, see module docs). Stream existence
+/// and hashes are *not* checked here; that is [`verify`], run at
+/// claim time against the live document.
+pub(super) fn extract(doc: &Document, page_count: usize) -> Option<Embedded> {
     let catalog = doc.catalog().ok()?;
     let payload = catalog.get(CATALOG_KEY).ok()?.as_dict().ok()?;
     if payload.get(b"Version").ok()?.as_i64().ok()? != VERSION {
         return None;
     }
     let boxes = payload.get(b"Boxes").ok()?.as_array().ok()?;
-    if boxes.len() > MAX_BOXES {
+    if boxes.is_empty() || boxes.len() > MAX_BOXES {
         return None;
     }
-    boxes
+    let boxes: Vec<OverlayText> = boxes
         .iter()
         .map(|obj| decode_box(obj.as_dict().ok()?, page_count))
-        .collect()
+        .collect::<Option<_>>()?;
+    let streams = payload.get(b"Streams").ok()?.as_array().ok()?;
+    // One baked stream per page with boxes, never more.
+    if streams.is_empty() || streams.len() > page_count {
+        return None;
+    }
+    let streams: Vec<ExpectedStream> = streams
+        .iter()
+        .map(|obj| decode_stream(obj.as_dict().ok()?, page_count))
+        .collect::<Option<_>>()?;
+    // The payload must describe exactly one stream per page that
+    // has boxes, and no stream for a page without any: a payload
+    // describing a different bake than its box list is rejected
+    // before hashes are even consulted.
+    let box_pages: BTreeSet<usize> = boxes.iter().map(|item| item.page).collect();
+    let stream_pages: BTreeSet<usize> = streams.iter().map(|stream| stream.page).collect();
+    if box_pages != stream_pages {
+        return None;
+    }
+    let unique_ids: HashSet<ObjectId> = streams.iter().map(|stream| stream.id).collect();
+    if unique_ids.len() != streams.len() {
+        return None;
+    }
+    Some(Embedded { boxes, streams })
 }
 
-/// Remove baked overlay streams (identified by [`OVERLAY_MARKER`],
-/// never by recorded object ids) from every page's `/Contents`.
-/// The `q`/`Q` wrapper streams around pre-existing content are
-/// unmarked and stay; they are a balanced no-op pair on their own.
-pub(super) fn strip_baked_streams(doc: &mut Document, page_ids: &[ObjectId]) {
+/// Whether every stream `embedded` records is still exactly where
+/// and what the payload says, and no other marked stream exists.
+/// This is the gate between "payload present" and "payload
+/// trusted": stripping or restoring on anything less would let a
+/// forged or stale payload hide real page content (marked stream
+/// that was never a bake) or duplicate it (bake rewritten so its
+/// stream no longer matches, leaving the copy in place while the
+/// boxes come back as overlays).
+pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded) -> bool {
+    let expected: BTreeMap<usize, &ExpectedStream> =
+        embedded.streams.iter().map(|s| (s.page, s)).collect();
+    for (page, &page_id) in page_ids.iter().enumerate() {
+        let contents = doc.get_page_contents(page_id);
+        let expected_here = expected.get(&page);
+        let mut found = false;
+        for id in &contents {
+            // Non-stream entries in `/Contents` cannot occur from
+            // lopdf's accessor, but an unreadable object is simply
+            // not a baked stream; it is never stripped either way.
+            let Some(plain) = plain_stream(doc, *id) else {
+                continue;
+            };
+            if !plain.starts_with(OVERLAY_MARKER) {
+                continue;
+            }
+            // A marked stream: it must be *the* recorded stream
+            // for this page, byte for byte. Anything else — wrong
+            // id, edited bytes, an extra marked stream, a marked
+            // stream on a page the payload does not claim — is a
+            // divergence the payload cannot account for.
+            match expected_here {
+                Some(stream) if stream.id == *id && !found => {
+                    if Sha256::digest(&plain)[..] != stream.sha256 {
+                        return false;
+                    }
+                    found = true;
+                }
+                _ => return false,
+            }
+        }
+        if expected_here.is_some() && !found {
+            return false;
+        }
+    }
+    true
+}
+
+/// Remove exactly the verified baked streams from every page's
+/// `/Contents`. Must only be called after [`verify`] returned
+/// true for the same document; it trusts `embedded` blindly. The
+/// `q`/`Q` wrapper streams around pre-existing content are not
+/// recorded and stay; they are a balanced no-op pair on their own.
+pub(super) fn strip_verified(doc: &mut Document, page_ids: &[ObjectId], embedded: &Embedded) {
+    let doomed: HashSet<ObjectId> = embedded.streams.iter().map(|s| s.id).collect();
     for &page_id in page_ids {
         let contents = doc.get_page_contents(page_id);
         let kept: Vec<ObjectId> = contents
             .iter()
             .copied()
-            .filter(|id| !is_overlay_stream(doc, *id))
+            .filter(|id| !doomed.contains(id))
             .collect();
         if kept.len() == contents.len() {
             continue;
@@ -145,23 +297,69 @@ pub(super) fn strip_baked_streams(doc: &mut Document, page_ids: &[ObjectId]) {
     }
 }
 
-/// Whether `id` is a content stream starting with the overlay
-/// marker. A stream that cannot be read or decoded is kept: dropping
-/// unrecognized content would risk deleting original page art.
-fn is_overlay_stream(doc: &Document, id: ObjectId) -> bool {
-    let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
-        return false;
-    };
-    if stream.content.starts_with(OVERLAY_MARKER) {
-        return true;
+/// Decompressed contents of stream `id`, bounded by
+/// [`MAX_STREAM_BYTES`]. `None` for non-streams, unreadable or
+/// undecodable streams, and oversize ones — all of which simply
+/// fail verification or (at bake time) abort the save.
+fn plain_stream(doc: &Document, id: ObjectId) -> Option<Vec<u8>> {
+    let stream = doc.get_object(id).ok()?.as_stream().ok()?;
+    if stream.content.len() > MAX_STREAM_BYTES {
+        return None;
     }
-    // Another tool may have re-compressed the stream since the bake.
-    stream
-        .get_plain_content()
-        .is_ok_and(|plain| plain.starts_with(OVERLAY_MARKER))
+    let plain = stream.get_plain_content().ok()?;
+    (plain.len() <= MAX_STREAM_BYTES).then_some(plain)
 }
 
-/// Validate and convert one payload dictionary. Every field is
+/// Validate and convert one stream dictionary.
+fn decode_stream(dict: &Dictionary, page_count: usize) -> Option<ExpectedStream> {
+    let page = dict.get(b"Page").ok()?.as_i64().ok()?;
+    let page = usize::try_from(page).ok()?.checked_sub(1)?;
+    if page >= page_count {
+        return None;
+    }
+    let obj = u32::try_from(dict.get(b"Obj").ok()?.as_i64().ok()?).ok()?;
+    let generation = u16::try_from(dict.get(b"Gen").ok()?.as_i64().ok()?).ok()?;
+    let hex = dict.get(b"Sha256").ok()?.as_str().ok()?;
+    Some(ExpectedStream {
+        page,
+        id: (obj, generation),
+        sha256: parse_hex_32(hex)?,
+    })
+}
+
+/// Lowercase hex of `bytes`, as stored in the payload.
+fn to_hex(bytes: &[u8]) -> Vec<u8> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = Vec::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[usize::from(byte >> 4)]);
+        out.push(HEX[usize::from(byte & 0x0F)]);
+    }
+    out
+}
+
+/// Parse exactly 64 hex characters into a 32-byte hash. Mixed case
+/// is accepted; anything else rejects the payload.
+fn parse_hex_32(hex: &[u8]) -> Option<[u8; 32]> {
+    if hex.len() != 64 {
+        return None;
+    }
+    let nibble = |c: u8| -> Option<u8> {
+        match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            b'A'..=b'F' => Some(c - b'A' + 10),
+            _ => None,
+        }
+    };
+    let mut out = [0_u8; 32];
+    for (slot, pair) in out.iter_mut().zip(hex.chunks_exact(2)) {
+        *slot = (nibble(pair[0])? << 4) | nibble(pair[1])?;
+    }
+    Some(out)
+}
+
+/// Validate and convert one box dictionary. Every field is
 /// required and range-checked; any failure rejects the whole
 /// payload (the caller maps `None` to "no payload").
 fn decode_box(dict: &Dictionary, page_count: usize) -> Option<OverlayText> {
