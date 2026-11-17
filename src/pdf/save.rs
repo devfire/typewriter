@@ -199,9 +199,9 @@ impl PdfDoc {
         let mut tmp = tempfile::NamedTempFile::new_in(&dir)
             .with_context(|| format!("failed to save {}", out.display()))?;
         if let Some(permissions) = permissions {
-            tmp.as_file().set_permissions(permissions).with_context(|| {
-                format!("failed to preserve permissions for {}", out.display())
-            })?;
+            tmp.as_file()
+                .set_permissions(permissions)
+                .with_context(|| format!("failed to preserve permissions for {}", out.display()))?;
         }
         tmp.write_all(bytes)
             .with_context(|| format!("failed to save {}", out.display()))?;

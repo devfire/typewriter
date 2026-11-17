@@ -121,7 +121,11 @@ fn paste_clamps_to_bottom_and_right_page_edges() {
     let pasted = state.paste(&mut clipboard, 0, (612.0, 792.0));
     let item = state.item(pasted).unwrap();
     assert!((item.x_pt - 462.0).abs() < 1e-4, "got {}", item.x_pt);
-    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+    assert!(
+        (item.y_top_pt - 777.6).abs() < 1e-4,
+        "got {}",
+        item.y_top_pt
+    );
 }
 
 #[test]
@@ -135,7 +139,11 @@ fn repeated_paste_stays_on_page_at_the_edge() {
         last = state.paste(&mut clipboard, 0, (612.0, 792.0));
     }
     let item = state.item(last).unwrap();
-    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+    assert!(
+        (item.y_top_pt - 777.6).abs() < 1e-4,
+        "got {}",
+        item.y_top_pt
+    );
     assert!(item.y_top_pt + LEADING * item.size_pt <= 792.0);
 }
 
@@ -151,7 +159,11 @@ fn paste_from_larger_page_onto_smaller_page_clamps_inside() {
     let item = state.item(pasted).unwrap();
     assert_eq!(item.page, 1);
     assert!((item.x_pt - 512.0).abs() < 1e-4, "got {}", item.x_pt);
-    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+    assert!(
+        (item.y_top_pt - 777.6).abs() < 1e-4,
+        "got {}",
+        item.y_top_pt
+    );
 }
 
 #[test]
@@ -161,7 +173,11 @@ fn duplicate_clamps_to_page_edge() {
     state.item_mut(src).unwrap().width_pt = Some(150.0);
     let dup = state.duplicate_selected((612.0, 792.0)).unwrap();
     let item = state.item(dup).unwrap();
-    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+    assert!(
+        (item.y_top_pt - 777.6).abs() < 1e-4,
+        "got {}",
+        item.y_top_pt
+    );
 }
 
 #[test]
@@ -313,7 +329,10 @@ fn dropping_an_empty_selected_box_returns_to_clean() {
     assert!(state.is_dirty());
     state.drop_empty_selected();
     assert_eq!(state.items, Vec::new());
-    assert!(!state.is_dirty(), "dropped empty box leaves nothing to save");
+    assert!(
+        !state.is_dirty(),
+        "dropped empty box leaves nothing to save"
+    );
 }
 
 #[test]

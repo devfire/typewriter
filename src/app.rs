@@ -217,17 +217,19 @@ impl TypewriterApp {
         // allocation with `PdfDoc`.
         let restored = doc.take_embedded_boxes();
         let restored_count = restored.len();
-        let hayro_pdf = match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.render_bytes)) {
-            Ok(pdf) => pdf,
-            Err(hayro::hayro_syntax::LoadPdfError::Decryption(_)) => {
-                self.status = "Encrypted/password-protected PDFs are not supported.".to_string();
-                return false;
-            }
-            Err(hayro::hayro_syntax::LoadPdfError::Invalid) => {
-                self.status = "Corrupt or unsupported PDF.".to_string();
-                return false;
-            }
-        };
+        let hayro_pdf =
+            match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.render_bytes)) {
+                Ok(pdf) => pdf,
+                Err(hayro::hayro_syntax::LoadPdfError::Decryption(_)) => {
+                    self.status =
+                        "Encrypted/password-protected PDFs are not supported.".to_string();
+                    return false;
+                }
+                Err(hayro::hayro_syntax::LoadPdfError::Invalid) => {
+                    self.status = "Corrupt or unsupported PDF.".to_string();
+                    return false;
+                }
+            };
         self.overlays.restore_embedded(restored);
         self.renderer.invalidate();
         self.resize_box = None;
@@ -483,57 +485,47 @@ impl TypewriterApp {
         if ctx.wants_keyboard_input() {
             return;
         }
-        let (
-            copy,
-            cut,
-            paste,
-            duplicate,
-            redo,
-            undo,
-            zoom_in,
-            zoom_out,
-            escape,
-            delete,
-        ) = ctx.input_mut(|i| {
-            // eframe/egui-winit intercepts Ctrl/Cmd+C/X/V and emits
-            // `Event::Copy`/`Cut`/`Paste` instead of `Event::Key`, so
-            // `consume_shortcut` alone never sees them. Consume those
-            // events here (a focused text editor is guarded above and
-            // keeps its native handling). The `consume_shortcut` calls
-            // remain for backends that do deliver the key press.
-            let (mut copy_event, mut cut_event, mut paste_event) = (false, false, false);
-            i.events.retain(|event| match event {
-                egui::Event::Copy => {
-                    copy_event = true;
-                    false
-                }
-                egui::Event::Cut => {
-                    cut_event = true;
-                    false
-                }
-                egui::Event::Paste(_) => {
-                    paste_event = true;
-                    false
-                }
-                _ => true,
+        let (copy, cut, paste, duplicate, redo, undo, zoom_in, zoom_out, escape, delete) = ctx
+            .input_mut(|i| {
+                // eframe/egui-winit intercepts Ctrl/Cmd+C/X/V and emits
+                // `Event::Copy`/`Cut`/`Paste` instead of `Event::Key`, so
+                // `consume_shortcut` alone never sees them. Consume those
+                // events here (a focused text editor is guarded above and
+                // keeps its native handling). The `consume_shortcut` calls
+                // remain for backends that do deliver the key press.
+                let (mut copy_event, mut cut_event, mut paste_event) = (false, false, false);
+                i.events.retain(|event| match event {
+                    egui::Event::Copy => {
+                        copy_event = true;
+                        false
+                    }
+                    egui::Event::Cut => {
+                        cut_event = true;
+                        false
+                    }
+                    egui::Event::Paste(_) => {
+                        paste_event = true;
+                        false
+                    }
+                    _ => true,
+                });
+                (
+                    i.consume_shortcut(&SHORTCUT_COPY) || copy_event,
+                    i.consume_shortcut(&SHORTCUT_CUT) || cut_event,
+                    i.consume_shortcut(&SHORTCUT_PASTE) || paste_event,
+                    i.consume_shortcut(&SHORTCUT_DUPLICATE),
+                    // Redo before Undo: both share Key::Z, and a
+                    // Ctrl+Shift+Z press must not be taken as Undo.
+                    i.consume_shortcut(&SHORTCUT_REDO),
+                    i.consume_shortcut(&SHORTCUT_UNDO),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+                )
             });
-            (
-                i.consume_shortcut(&SHORTCUT_COPY) || copy_event,
-                i.consume_shortcut(&SHORTCUT_CUT) || cut_event,
-                i.consume_shortcut(&SHORTCUT_PASTE) || paste_event,
-                i.consume_shortcut(&SHORTCUT_DUPLICATE),
-                // Redo before Undo: both share Key::Z, and a
-                // Ctrl+Shift+Z press must not be taken as Undo.
-                i.consume_shortcut(&SHORTCUT_REDO),
-                i.consume_shortcut(&SHORTCUT_UNDO),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
-                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
-            )
-        });
         // Box clipboard. While a text editor has keyboard focus
         // `handle_shortcuts` returns early above, so Ctrl+C/X/V
         // there keep their native text-editing meaning.

@@ -1,8 +1,8 @@
 //! Embedded-payload tests: saved boxes must reopen editable, and
 //! editing them must replace the baked text, not duplicate it.
 
-use super::tests::fixture_pdf;
 use super::PdfDoc;
+use super::tests::fixture_pdf;
 use crate::overlay::{BoxKind, OverlayState};
 use crate::test_util::TempFile;
 use lopdf::{Document, Object, ObjectId, Stream, dictionary};
@@ -108,7 +108,10 @@ fn deleting_all_restored_boxes_removes_text_and_payload() {
     let out2 = TempFile::new("embedded-delete-out");
     pdf.bake_and_save(&mut overlays, out2.path()).unwrap();
     let baked = baked_text(out2.path());
-    assert!(!baked.contains("Jane Doe"), "deleted text remains: {baked:?}");
+    assert!(
+        !baked.contains("Jane Doe"),
+        "deleted text remains: {baked:?}"
+    );
     let mut reopened = PdfDoc::open(out2.path()).unwrap();
     assert!(reopened.take_embedded_boxes().is_empty());
 }
@@ -293,7 +296,11 @@ fn merged_baked_stream_is_not_restored_or_duplicated() {
 #[test]
 fn tampered_payload_hash_or_object_id_is_not_trusted() {
     for (name, key, value) in [
-        ("embedded-bad-hash", "Sha256", Object::String(vec![b'0'; 64], lopdf::StringFormat::Literal)),
+        (
+            "embedded-bad-hash",
+            "Sha256",
+            Object::String(vec![b'0'; 64], lopdf::StringFormat::Literal),
+        ),
         ("embedded-bad-obj", "Obj", Object::Integer(999_999)),
     ] {
         let out = tampered(name, |doc| {

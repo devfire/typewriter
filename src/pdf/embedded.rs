@@ -183,12 +183,14 @@ pub(super) fn store(
         dict.set("Size", Object::Real(item.size_pt));
         dict.set(
             "Color",
-            Object::Array(item.color.iter().map(|&c| Object::Integer(i64::from(c))).collect()),
+            Object::Array(
+                item.color
+                    .iter()
+                    .map(|&c| Object::Integer(i64::from(c)))
+                    .collect(),
+            ),
         );
-        dict.set(
-            "Width",
-            item.width_pt.map_or(Object::Null, Object::Real),
-        );
+        dict.set("Width", item.width_pt.map_or(Object::Null, Object::Real));
         dicts.push(Object::Dictionary(dict));
     }
     let mut payload = Dictionary::new();
@@ -553,7 +555,9 @@ fn decode_text(obj: &Object) -> Option<String> {
             .chunks_exact(2)
             .map(|pair| u16::from_be_bytes([pair[0], pair[1]]))
             .collect();
-        char::decode_utf16(units).collect::<Result<String, _>>().ok()
+        char::decode_utf16(units)
+            .collect::<Result<String, _>>()
+            .ok()
     } else {
         String::from_utf8(bytes.to_vec()).ok()
     }

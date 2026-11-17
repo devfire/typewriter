@@ -485,9 +485,10 @@ impl TypewriterApp {
         let now = ui.input(|i| i.time);
         self.record_inspector_edit(before, selected, changed, lost_focus, pointer_down, now);
         if self.inspector_gesture.is_some() && !pointer_down {
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
-                INSPECTOR_GESTURE_IDLE_SECS,
-            ));
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(
+                    INSPECTOR_GESTURE_IDLE_SECS,
+                ));
         }
     }
 

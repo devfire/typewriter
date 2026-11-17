@@ -97,8 +97,14 @@ fn signature_fallback_glyph_extracts_as_question_mark_regardless_of_order() {
     // also extract as `?` — whether the unmappable char or a real `?`
     // reaches the shared fallback glyph first.
     let face = signature_font::face().unwrap();
-    assert!(face.glyph_index('\u{436}').is_none(), "test premise: zhe must be unmappable");
-    assert!(face.glyph_index('?').is_some(), "test premise: `?` must be mappable");
+    assert!(
+        face.glyph_index('\u{436}').is_none(),
+        "test premise: zhe must be unmappable"
+    );
+    assert!(
+        face.glyph_index('?').is_some(),
+        "test premise: `?` must be mappable"
+    );
     for input in ["\u{436}A?", "?A\u{436}"] {
         let (mut pdf, out) = fixture_pdf();
         let mut overlays = OverlayState::default();
@@ -230,7 +236,8 @@ fn reloaded_signature_bake_adds_fresh_subset_font() {
     assert_eq!(font_lens.len(), 2, "expected two subset font programs");
     for len in &font_lens {
         assert!(
-            usize::try_from(*len).is_ok_and(|len| len > 0 && len < crate::signature::FONT_BYTES.len() / 10),
+            usize::try_from(*len)
+                .is_ok_and(|len| len > 0 && len < crate::signature::FONT_BYTES.len() / 10),
             "font program is not a small subset: {len}"
         );
     }
@@ -238,13 +245,13 @@ fn reloaded_signature_bake_adds_fresh_subset_font() {
     // (subset glyph ids differ per bake, so match by width value).
     let face = signature_font::face().unwrap();
     let z_gid = face.glyph_index('Z').unwrap();
-    let z_width = signature_font::width_1000(
-        face.glyph_hor_advance(z_gid).unwrap(),
-        face.units_per_em(),
-    );
+    let z_width =
+        signature_font::width_1000(face.glyph_hor_advance(z_gid).unwrap(), face.units_per_em());
     assert_ne!(z_width, 500, "test premise: Z must not use default width");
     let has_z_width = pdf.doc.objects.values().any(|obj| {
-        let Ok(dict) = obj.as_dict() else { return false };
+        let Ok(dict) = obj.as_dict() else {
+            return false;
+        };
         let is_cid = dict
             .get(b"Subtype")
             .is_ok_and(|s| s.as_name().is_ok_and(|n| n == b"CIDFontType2"));

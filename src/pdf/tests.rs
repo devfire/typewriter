@@ -192,10 +192,11 @@ fn inverted_media_box_opens_with_positive_size() {
     // ISO 32000-1 §7.9.5: corners may be listed in any order.
     let (mut fixture, _out) = fixture_pdf();
     let page_id = fixture.page_ids[0];
-    fixture.doc.get_dictionary_mut(page_id).unwrap().set(
-        "MediaBox",
-        vec![612.into(), 792.into(), 0.into(), 0.into()],
-    );
+    fixture
+        .doc
+        .get_dictionary_mut(page_id)
+        .unwrap()
+        .set("MediaBox", vec![612.into(), 792.into(), 0.into(), 0.into()]);
     let input = TempFile::new("inverted-mediabox");
     fixture.doc.save(input.path()).unwrap();
     let pdf = PdfDoc::open(input.path()).unwrap();
