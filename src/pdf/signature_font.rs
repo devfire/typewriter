@@ -19,6 +19,7 @@ use crate::overlay::OverlayText;
 use crate::signature::FONT_BYTES;
 use anyhow::{Context, Result};
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, dictionary};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use subsetter::GlyphRemapper;
@@ -103,6 +104,32 @@ fn to_unicode_cmap(used: &BTreeMap<u16, String>) -> Vec<u8> {
     out.into_bytes()
 }
 
+/// Font name for one bake's subset: `ABCDEF+MomoSignature`.
+///
+/// ISO 32000-1 §9.6.4 requires a subset font's name to start with
+/// a tag of six uppercase letters followed by `+`. Distinct bakes
+/// embed distinct subsets under otherwise identical names, so
+/// name-keyed font caches could substitute one subset for another.
+/// The tag is deterministic: six letters derived from `Sha256` of
+/// the sorted original glyph ids (`old_ids` comes from a
+/// `BTreeMap`, so it is already sorted), hence the same glyph set
+/// always yields the same name and a different set yields a
+/// different one (up to hash collision).
+fn subset_name(old_ids: &[u16]) -> String {
+    let mut hasher = Sha256::new();
+    for id in old_ids {
+        hasher.update(id.to_be_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut name = String::with_capacity(6 + 1 + "MomoSignature".len());
+    for byte in &digest[..6] {
+        name.push(char::from(b'A' + byte % 26));
+    }
+    name.push('+');
+    name.push_str("MomoSignature");
+    name
+}
+
 /// One bake's subsetted signature font: the subset font program plus
 /// everything needed to encode text for it and describe it in a PDF.
 ///
@@ -111,6 +138,8 @@ fn to_unicode_cmap(used: &BTreeMap<u16, String>) -> Vec<u8> {
 /// `.notdef`), so encoding, `/W` widths, and `ToUnicode` are all
 /// keyed by subset glyph id, never by original glyph id.
 pub(super) struct SignatureFont {
+    /// Tagged font name (`ABCDEF+MomoSignature`; see `subset_name`).
+    name: String,
     /// Source char -> glyph id in the subset.
     encoding: BTreeMap<char, u16>,
     /// Subset glyph id -> (source char, width in 1000-unit em space).
@@ -145,6 +174,7 @@ impl SignatureFont {
             .map(|(old, (c, width))| (remapper.get(*old).unwrap_or(0), (*c, *width)))
             .collect();
         Ok(Self {
+            name: subset_name(&old_ids),
             encoding,
             used,
             subset,
@@ -190,7 +220,7 @@ impl SignatureFont {
         let font_file_id = doc.add_object(Object::Stream(font_stream));
         let descriptor_id = doc.add_object(dictionary! {
             "Type" => "FontDescriptor",
-            "FontName" => "MomoSignature",
+            "FontName" => self.name.as_str(),
             "Flags" => 40,
             "FontBBox" => vec![
                 i64::from(bbox.x_min).into(),
@@ -213,7 +243,7 @@ impl SignatureFont {
         let cid_font_id = doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "CIDFontType2",
-            "BaseFont" => "MomoSignature",
+            "BaseFont" => self.name.as_str(),
             "CIDSystemInfo" => dictionary! {
                 "Registry" => Object::String(b"Adobe".to_vec(), lopdf::StringFormat::Literal),
                 "Ordering" => Object::String(b"Identity".to_vec(), lopdf::StringFormat::Literal),
@@ -236,7 +266,7 @@ impl SignatureFont {
         doc.add_object(dictionary! {
             "Type" => "Font",
             "Subtype" => "Type0",
-            "BaseFont" => "MomoSignature",
+            "BaseFont" => self.name.as_str(),
             "Encoding" => "Identity-H",
             "DescendantFonts" => vec![Object::Reference(cid_font_id)],
             "ToUnicode" => Object::Reference(to_unicode_id),
