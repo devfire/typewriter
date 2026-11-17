@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use lopdf::content::{Content, Operation};
 use lopdf::{Dictionary, Document, Object, ObjectId, Stream, StringFormat, dictionary};
 use page_tree::{
-    ResourcesTarget, find_resources_target, inherited_int, insert_font_entry, page_box, resolve,
+    effective_font_dict, effective_fonts, inherited_int, insert_font_entry, page_box, resolve,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -259,15 +259,17 @@ impl PdfDoc {
     /// Return the resource alias of a usable standard-14 `WinAnsi`
     /// Helvetica on `page_id`, adding a fresh one if the page has none.
     ///
+    /// Only fonts in the page's effective resources (see
+    /// `effective_fonts`) are considered: an ancestor Helvetica the
+    /// page cannot see must not be reused.
+    ///
     /// A pre-existing `/Helvetica` is reused only when it is a
     /// `/Subtype /Type1` font with direct `/Encoding /WinAnsiEncoding`,
     /// no `/Widths`, and no embedded `/FontFile*` in its descriptor;
     /// otherwise `WinAnsi` bytes or standard AFM widths would disagree
     /// with the page font.
     fn ensure_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<String> {
-        let fonts = doc
-            .get_page_fonts(page_id)
-            .context("failed to read page fonts")?;
+        let fonts = effective_fonts(doc, page_id);
         for (name, font) in &fonts {
             if is_standard_winansi_helvetica(doc, font) {
                 return Ok(String::from_utf8_lossy(name).into_owned());
@@ -296,9 +298,7 @@ impl PdfDoc {
         if let Some(alias) = signature_font::signature_alias(doc, page_id, type0_id) {
             return Ok(alias);
         }
-        let fonts = doc
-            .get_page_fonts(page_id)
-            .context("failed to read page fonts")?;
+        let fonts = effective_fonts(doc, page_id);
         let alias = free_alias(&fonts, "F_SIG");
         insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
         Ok(alias)

@@ -609,3 +609,60 @@ fn non_standard_helvetica_on_page_is_not_reused() {
         "F_TW"
     );
 }
+
+#[test]
+fn helvetica_from_shadowed_inherited_resources_is_not_reused() {
+    // Page-local /Resources replaces the inherited one (ISO 32000-1
+    // section 7.7.3.4): the ancestor's /FH Helvetica is invisible to a page
+    // whose own resources only define /F1, so baking must insert a
+    // fresh Helvetica into the page's effective resources instead of
+    // emitting `/FH ... Tf` against a dict that has no /FH.
+    let (mut pdf, _out) = fixture_pdf();
+    let page_id = pdf.page_ids[0];
+    let parent_id = pdf
+        .doc
+        .get_dictionary(page_id)
+        .unwrap()
+        .get(b"Parent")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    let helvetica_id = pdf.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica",
+        "Encoding" => "WinAnsiEncoding",
+    });
+    let times_id = pdf.doc.add_object(dictionary! {
+        "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Times-Roman",
+    });
+    let ancestor_resources_id = pdf.doc.add_object(
+        dictionary! { "Font" => dictionary! { "FH" => Object::Reference(helvetica_id) } },
+    );
+    let page_resources_id = pdf
+        .doc
+        .add_object(dictionary! { "Font" => dictionary! { "F1" => Object::Reference(times_id) } });
+    pdf.doc
+        .get_dictionary_mut(parent_id)
+        .unwrap()
+        .set("Resources", Object::Reference(ancestor_resources_id));
+    pdf.doc
+        .get_dictionary_mut(page_id)
+        .unwrap()
+        .set("Resources", Object::Reference(page_resources_id));
+
+    let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
+    assert_eq!(alias, "F_TW");
+    let fonts = effective_fonts(&pdf.doc, page_id);
+    let inserted = fonts
+        .get(alias.as_bytes())
+        .expect("alias used for Tf must exist in effective /Font dict");
+    assert!(
+        is_standard_winansi_helvetica(&pdf.doc, inserted),
+        "inserted font must be standard WinAnsi Helvetica"
+    );
+    assert!(!fonts.contains_key(b"FH".as_slice()));
+    // Second call reuses the now-visible inserted Helvetica.
+    assert_eq!(
+        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        alias
+    );
+}

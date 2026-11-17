@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use lopdf::{Dictionary, Document, Object, ObjectId};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
     match obj {
@@ -122,6 +122,47 @@ pub(super) fn find_resources_target(doc: &Document, page_id: ObjectId) -> Option
         Ok(Object::Dictionary(_)) => ParentVisit::Found(ResourcesTarget::Direct(id)),
         _ => ParentVisit::Continue,
     })
+}
+
+/// The page's effective `/Font` dictionary: the `/Font` entry of
+/// the nearest `/Resources` in the page tree. A node's own
+/// `/Resources` replaces (does not merge with) any inherited one
+/// (ISO 32000-1 §7.7.3.4), so fonts visible only through an
+/// ancestor shadowed by a nearer `/Resources` are not included.
+pub(super) fn effective_font_dict(doc: &Document, page_id: ObjectId) -> Option<&Dictionary> {
+    let target = find_resources_target(doc, page_id)?;
+    let resources = match target {
+        ResourcesTarget::Reference(id) => doc.get_dictionary(id).ok()?,
+        ResourcesTarget::Direct(node_id) => doc
+            .get_dictionary(node_id)
+            .ok()?
+            .get(b"Resources")
+            .ok()?
+            .as_dict()
+            .ok()?,
+    };
+    resolve(doc, resources.get(b"Font").ok()?)?.as_dict().ok()
+}
+
+/// Alias -> font dictionary for every font in the page's effective
+/// `/Font` dictionary (see `effective_font_dict`). Unlike
+/// `Document::get_page_fonts`, this never merges fonts from an
+/// ancestor `/Resources` shadowed by a nearer one. Entries whose
+/// value does not resolve to a dictionary are omitted; a page with
+/// no effective `/Font` yields an empty map.
+pub(super) fn effective_fonts(doc: &Document, page_id: ObjectId) -> BTreeMap<Vec<u8>, &Dictionary> {
+    let Some(fonts) = effective_font_dict(doc, page_id) else {
+        return BTreeMap::new();
+    };
+    fonts
+        .iter()
+        .filter_map(|(alias, value)| {
+            resolve(doc, value)?
+                .as_dict()
+                .ok()
+                .map(|font| (alias.clone(), font))
+        })
+        .collect()
 }
 
 fn resources_dict_mut(doc: &mut Document, target: ResourcesTarget) -> Result<&mut Dictionary> {

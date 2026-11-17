@@ -284,19 +284,7 @@ pub(super) fn signature_alias(
     page_id: ObjectId,
     type0_id: ObjectId,
 ) -> Option<String> {
-    let target = super::find_resources_target(doc, page_id)?;
-    let resources = match target {
-        super::ResourcesTarget::Reference(id) => doc.get_dictionary(id).ok()?,
-        super::ResourcesTarget::Direct(node_id) => doc
-            .get_dictionary(node_id)
-            .ok()?
-            .get(b"Resources")
-            .ok()?
-            .as_dict()
-            .ok()?,
-    };
-    let fonts = super::resolve(doc, resources.get(b"Font").ok()?)?;
-    let fonts = fonts.as_dict().ok()?;
+    let fonts = super::effective_font_dict(doc, page_id)?;
     for (alias, value) in fonts {
         if value.as_reference().is_ok_and(|id| id == type0_id) {
             return Some(String::from_utf8_lossy(alias).into_owned());
