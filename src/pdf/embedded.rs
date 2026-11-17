@@ -26,6 +26,15 @@
 //! hash covers the marker bytes), and no unrecorded marked stream
 //! exists on any page. Only then are exactly those streams
 //! un-referenced and the boxes restored as live overlays. Any
+//! The bake's `q`/`Q` wrapper streams around pre-existing
+//! content are marked (`%TypewriterWrap`) and held to the same
+//! standard: only a byte-exact pair in the written positions
+//! (first, and immediately before the overlay) is stripped with
+//! the overlay; a lone, misplaced, or edited wrapper likewise
+//! voids the claim, so no save leaves a dangling half-pair —
+//! or piles pairs up across saves. Unmarked wrappers in those
+//! positions are the pre-marking version 2 shape and are
+//! stripped the same way. Any
 //! mismatch — forged marker, edited or merged stream, rewired
 //! object id — and the whole payload is ignored: nothing is
 //! stripped, nothing is restored, and the file behaves as a plain
@@ -58,6 +67,26 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 /// baked streams on sight, but is never trusted on its own: see
 /// the hash verification in [`verify`].
 pub(super) const OVERLAY_MARKER: &[u8] = b"%TypewriterOverlay\n";
+
+/// Marker in the `q` / `Q` wrapper streams a bake puts around
+/// pre-existing page content (see `append_overlay_stream`). A PDF
+/// comment trailing the operator — comment-first streams make
+/// some content parsers drop the operator — so renderers and
+/// parsers see plain `q`/`Q`. A wrapper is trusted only as a
+/// matched pair in the exact positions `verify` checks, around
+/// a hash-verified overlay.
+pub(super) const WRAP_MARKER: &[u8] = b"%TypewriterWrap";
+/// Whole contents of the marked graphics-state save wrapper.
+pub(super) const WRAP_SAVE: &[u8] = b"q %TypewriterWrap\n";
+/// Whole contents of the marked graphics-state restore wrapper.
+/// The leading newline guards against a preceding stream that
+/// does not end with whitespace, as before marking.
+pub(super) const WRAP_RESTORE: &[u8] = b"\nQ %TypewriterWrap\n";
+/// Wrapper bytes written before wrappers were marked (payload
+/// version 2 files already on disk). Identified positionally in
+/// `strip_verified`, never by these bytes alone.
+const LEGACY_WRAP_SAVE: &[u8] = b"q\n";
+const LEGACY_WRAP_RESTORE: &[u8] = b"\nQ\n";
 
 /// Catalog key holding the embedded box list.
 const CATALOG_KEY: &[u8] = b"Typewriter";
@@ -225,6 +254,17 @@ pub(super) fn extract(doc: &Document, page_count: usize) -> Option<Embedded> {
 /// that was never a bake) or duplicate it (bake rewritten so its
 /// stream no longer matches, leaving the copy in place while the
 /// boxes come back as overlays).
+///
+/// Wrapper streams count as marked too: on a page with a recorded
+/// overlay they must form exactly the pair the bake wrote — the
+/// save wrapper first, the restore wrapper immediately before the
+/// overlay, byte for byte — or be absent entirely (a bake over
+/// empty contents writes no wrappers; a version 2 bake wrote them
+/// unmarked, which `strip_verified` handles positionally). A
+/// lone, misplaced, or edited wrapper, or any wrapper on a page
+/// with no recorded overlay, is a divergence: stripping it (or
+/// its surviving half) on faith could unbalance the `q`/`Q`
+/// nesting of content that stays.
 pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded) -> bool {
     let expected: BTreeMap<usize, &ExpectedStream> =
         embedded.streams.iter().map(|s| (s.page, s)).collect();
@@ -232,13 +272,33 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
         let contents = doc.get_page_contents(page_id);
         let expected_here = expected.get(&page);
         let mut found = false;
-        for id in &contents {
+        let mut overlay_at = None;
+        let mut wrap_save_at = None;
+        let mut wrap_restore_at = None;
+        for (at, id) in contents.iter().enumerate() {
             // Non-stream entries in `/Contents` cannot occur from
             // lopdf's accessor, but an unreadable object is simply
             // not a baked stream; it is never stripped either way.
             let Some(plain) = plain_stream(doc, *id) else {
                 continue;
             };
+            if plain
+                .windows(WRAP_MARKER.len())
+                .any(|window| window == WRAP_MARKER)
+            {
+                let slot = if plain == WRAP_SAVE {
+                    &mut wrap_save_at
+                } else if plain == WRAP_RESTORE {
+                    &mut wrap_restore_at
+                } else {
+                    return false;
+                };
+                if slot.is_some() {
+                    return false;
+                }
+                *slot = Some(at);
+                continue;
+            }
             if !plain.starts_with(OVERLAY_MARKER) {
                 continue;
             }
@@ -253,6 +313,7 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
                         return false;
                     }
                     found = true;
+                    overlay_at = Some(at);
                 }
                 _ => return false,
             }
@@ -260,23 +321,62 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
         if expected_here.is_some() && !found {
             return false;
         }
+        // The wrappers, if any, must be the matched pair around
+        // everything before the recorded overlay.
+        match (wrap_save_at, wrap_restore_at, overlay_at) {
+            (None, None, _) => {}
+            (Some(0), Some(restore), Some(overlay)) if restore + 1 == overlay => {}
+            _ => return false,
+        }
     }
     true
 }
 
 /// Remove exactly the verified baked streams from every page's
 /// `/Contents`. Must only be called after [`verify`] returned
-/// true for the same document; it trusts `embedded` blindly. The
-/// `q`/`Q` wrapper streams around pre-existing content are not
-/// recorded and stay; they are a balanced no-op pair on their own.
+/// true for the same document; it trusts `embedded` blindly.
+///
+/// A bake's `q`/`Q` wrappers go with its overlay, as a pair:
+/// leaving them behind would nest one more balanced but useless
+/// pair around the page content on every edit-and-save cycle,
+/// growing `/Contents` without limit. Marked pairs are the ones
+/// `verify` already checked (first stream, and immediately
+/// before the overlay). An unmarked pair in exactly those
+/// positions is the pair a pre-marking (version 2) bake wrote —
+/// position plus exact bytes identifies it, since that bake
+/// prepended and appended around all pre-existing content. Any
+/// other shape (no wrappers, a lone half) keeps its streams:
+/// they may be the page's own content.
 pub(super) fn strip_verified(doc: &mut Document, page_ids: &[ObjectId], embedded: &Embedded) {
     let doomed: HashSet<ObjectId> = embedded.streams.iter().map(|s| s.id).collect();
     for &page_id in page_ids {
         let contents = doc.get_page_contents(page_id);
+        let Some(overlay_at) = contents.iter().position(|id| doomed.contains(id)) else {
+            continue;
+        };
+        // The wrapper pair for this bake, if present: stream 0
+        // and the stream immediately before the overlay, matching
+        // the marked bytes, or the legacy unmarked bytes.
+        let mut wrappers: HashSet<ObjectId> = HashSet::new();
+        if overlay_at >= 2
+            && let (Some(save_id), Some(restore_id)) =
+                (contents.first(), contents.get(overlay_at - 1))
+        {
+            let save = plain_stream(doc, *save_id);
+            let restore = plain_stream(doc, *restore_id);
+            let marked =
+                save.as_deref() == Some(WRAP_SAVE) && restore.as_deref() == Some(WRAP_RESTORE);
+            let legacy = save.as_deref() == Some(LEGACY_WRAP_SAVE)
+                && restore.as_deref() == Some(LEGACY_WRAP_RESTORE);
+            if marked || legacy {
+                wrappers.insert(*save_id);
+                wrappers.insert(*restore_id);
+            }
+        }
         let kept: Vec<ObjectId> = contents
             .iter()
             .copied()
-            .filter(|id| !doomed.contains(id))
+            .filter(|id| !doomed.contains(id) && !wrappers.contains(id))
             .collect();
         if kept.len() == contents.len() {
             continue;

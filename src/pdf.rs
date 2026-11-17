@@ -442,11 +442,14 @@ fn append_overlay_stream(
         return Ok(overlay_id);
     }
     let overlay_bytes = marked_bytes;
-    let save_id = doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
-    // Leading newline guards against an existing stream that does not
-    // end with whitespace when viewers or `get_page_content` concatenate
-    // stream bytes directly.
-    let restore_id = doc.add_object(Stream::new(Dictionary::new(), b"\nQ\n".to_vec()));
+    // Marked like the overlay, so a later open strips the pair
+    // with it instead of nesting a new pair around the old one
+    // on every save (see `embedded::strip_verified`).
+    let save_id = doc.add_object(Stream::new(Dictionary::new(), embedded::WRAP_SAVE.to_vec()));
+    let restore_id = doc.add_object(Stream::new(
+        Dictionary::new(),
+        embedded::WRAP_RESTORE.to_vec(),
+    ));
     let overlay_id = doc.add_object(Stream::new(Dictionary::new(), overlay_bytes));
     let mut contents = Vec::with_capacity(existing.len() + 3);
     contents.push(Object::Reference(save_id));

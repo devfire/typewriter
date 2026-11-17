@@ -310,3 +310,128 @@ fn tampered_payload_hash_or_object_id_is_not_trusted() {
         assert_not_restored_and_not_stripped(out.path());
     }
 }
+
+/// Plain contents of every stream in the first page's `/Contents`
+/// of the file at `path`, in order.
+fn page_stream_bytes(path: &std::path::Path) -> Vec<Vec<u8>> {
+    let doc = Document::load(path).unwrap();
+    let page_id = *doc.get_pages().values().next().unwrap();
+    doc.get_page_contents(page_id)
+        .iter()
+        .map(|id| {
+            doc.get_object(*id)
+                .unwrap()
+                .as_stream()
+                .unwrap()
+                .get_plain_content()
+                .unwrap()
+        })
+        .collect()
+}
+
+/// A baked fixture whose page already has one (unmarked) content
+/// stream before the bake, so the bake must wrap it in `q`/`Q`.
+/// Returns the saved file and the pre-existing stream's contents.
+fn baked_fixture_with_content() -> (TempFile, Vec<u8>) {
+    let (mut pdf, out) = fixture_pdf();
+    let original: Vec<u8> = b"0 0 m\n".to_vec();
+    let original_id = pdf
+        .doc
+        .add_object(Stream::new(lopdf::Dictionary::new(), original.clone()));
+    pdf.doc
+        .get_dictionary_mut(pdf.page_ids[0])
+        .unwrap()
+        .set("Contents", Object::Reference(original_id));
+    let mut overlays = OverlayState::default();
+    let text = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(text).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    (out, original)
+}
+
+#[test]
+fn repeated_edit_save_cycles_do_not_pile_up_wrappers() {
+    let (out, original) = baked_fixture_with_content();
+    // One bake: [save wrapper, original, restore wrapper, overlay].
+    let streams = page_stream_bytes(out.path());
+    assert_eq!(streams.len(), 4, "first bake contents: {streams:?}");
+    assert_eq!(streams[0], super::embedded::WRAP_SAVE);
+    assert_eq!(streams[1], original);
+    assert_eq!(streams[2], super::embedded::WRAP_RESTORE);
+    assert!(streams[3].starts_with(OVERLAY_MARKER));
+
+    for cycle in 0..3 {
+        let mut pdf = PdfDoc::open(out.path()).unwrap();
+        let mut overlays = OverlayState::default();
+        overlays.restore_embedded(pdf.take_embedded_boxes());
+        assert_eq!(overlays.items.len(), 1, "cycle {cycle}: boxes lost");
+        // Claiming stripped the overlay *and* its wrapper pair:
+        // only the pre-existing stream remains.
+        let remaining = pdf.doc.get_page_contents(pdf.page_ids[0]);
+        assert_eq!(remaining.len(), 1, "cycle {cycle}: wrappers left behind");
+        pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+        let streams = page_stream_bytes(out.path());
+        assert_eq!(
+            streams.len(),
+            4,
+            "cycle {cycle}: wrappers piled up: {streams:?}"
+        );
+        assert_eq!(streams[0], super::embedded::WRAP_SAVE);
+        assert_eq!(streams[1], original);
+        assert_eq!(streams[2], super::embedded::WRAP_RESTORE);
+    }
+}
+
+#[test]
+fn legacy_unmarked_wrapper_pair_is_stripped_with_its_overlay() {
+    // Rewrite a marked bake's wrappers to the pre-marking bytes,
+    // as in a version 2 file: the pair in the written positions
+    // is still that bake's, so claiming strips it too.
+    let (source, original) = baked_fixture_with_content();
+    let mut doc = Document::load(source.path()).unwrap();
+    let page_id = *doc.get_pages().values().next().unwrap();
+    for id in doc.get_page_contents(page_id) {
+        let stream = doc.get_object_mut(id).unwrap().as_stream_mut().unwrap();
+        if stream.content == super::embedded::WRAP_SAVE {
+            stream.set_content(b"q\n".to_vec());
+        } else if stream.content == super::embedded::WRAP_RESTORE {
+            stream.set_content(b"\nQ\n".to_vec());
+        }
+    }
+    let out = TempFile::new("embedded-legacy-wrappers");
+    doc.save(out.path()).unwrap();
+
+    let mut pdf = PdfDoc::open(out.path()).unwrap();
+    assert_eq!(pdf.take_embedded_boxes().len(), 1);
+    let remaining = pdf.doc.get_page_contents(pdf.page_ids[0]);
+    assert_eq!(remaining.len(), 1, "legacy wrappers left behind");
+    let plain = pdf
+        .doc
+        .get_object(remaining[0])
+        .unwrap()
+        .as_stream()
+        .unwrap()
+        .get_plain_content()
+        .unwrap();
+    assert_eq!(plain, original);
+}
+
+#[test]
+fn tampered_wrapper_is_not_restored_or_stripped() {
+    // One half of the marked pair edited after the save: the pair
+    // can no longer be accounted for, so the claim must fail as
+    // a whole rather than strip the overlay and leave a dangling
+    // `q` (or restore the boxes over a still-baked copy).
+    let (source, _original) = baked_fixture_with_content();
+    let mut doc = Document::load(source.path()).unwrap();
+    for obj in doc.objects.values_mut() {
+        if let Ok(stream) = obj.as_stream_mut()
+            && stream.content == super::embedded::WRAP_RESTORE
+        {
+            stream.set_content(b"\nQ Q %TypewriterWrap\n".to_vec());
+        }
+    }
+    let out = TempFile::new("embedded-tampered-wrapper");
+    doc.save(out.path()).unwrap();
+    assert_not_restored_and_not_stripped(out.path());
+}
