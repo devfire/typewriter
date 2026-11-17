@@ -174,7 +174,7 @@ fn cut_removes_and_copy_without_selection_is_none() {
     let dup = state.duplicate_selected((612.0, 792.0)).unwrap();
     assert_eq!(state.items.len(), 2);
     assert_eq!(state.item(dup).unwrap().page, 1);
-    state.selected = Some(id);
+    state.select(Some(id));
     let cut = state.cut_selected().unwrap();
     assert_eq!(cut.text, "hello");
     assert_eq!(state.items.len(), 1);
@@ -227,7 +227,7 @@ fn undo_redo_reverses_add_remove_and_cut() {
     assert_eq!(state.items, Vec::new());
     assert!(state.undo());
     assert_eq!(state.item(id).unwrap().text, "hello");
-    state.selected = Some(id);
+    state.select(Some(id));
     assert!(state.cut_selected().is_some());
     assert_eq!(state.items, Vec::new());
     assert!(state.undo());
@@ -296,6 +296,50 @@ fn dropping_an_empty_selected_box_returns_to_clean() {
     state.drop_empty_selected();
     assert_eq!(state.items, Vec::new());
     assert!(!state.is_dirty(), "dropped empty box leaves nothing to save");
+}
+
+#[test]
+fn selecting_another_box_drops_the_empty_selected_box() {
+    let mut state = OverlayState::default();
+    let kept = state.add(0, 10.0, 20.0, BoxKind::Text);
+    state.item_mut(kept).unwrap().text = "keep me".to_string();
+    // Clicking elsewhere places (and selects) a second, empty box;
+    // selecting the first box must drop it, not leave it listed.
+    let empty = state.add(0, 50.0, 60.0, BoxKind::Text);
+    assert_eq!(state.items.len(), 2);
+    state.select(Some(kept));
+    assert_eq!(state.selected, Some(kept));
+    assert_eq!(state.items.len(), 1);
+    assert!(state.item(empty).is_none());
+    // Clearing the selection likewise drops a selected empty box,
+    // but keeps a non-empty one (only the selection goes away).
+    let empty = state.add(0, 50.0, 60.0, BoxKind::Text);
+    state.select(None);
+    assert_eq!(state.selected, None);
+    assert!(state.item(empty).is_none());
+    state.select(Some(kept));
+    state.select(None);
+    assert_eq!(state.selected, None);
+    assert_eq!(state.item(kept).unwrap().text, "keep me");
+    // Re-selecting the current box must not drop it.
+    let empty = state.add(0, 50.0, 60.0, BoxKind::Text);
+    state.select(Some(empty));
+    assert_eq!(state.selected, Some(empty));
+    assert!(state.item(empty).is_some());
+}
+
+#[test]
+fn adding_a_box_drops_the_previously_selected_empty_box() {
+    let mut state = OverlayState::default();
+    let first = state.add(0, 10.0, 20.0, BoxKind::Text);
+    let second = state.add(0, 50.0, 60.0, BoxKind::Text);
+    assert_eq!(state.selected, Some(second));
+    assert_eq!(state.items.len(), 1);
+    assert!(state.item(first).is_none());
+    // The discard and the insertion are one undo step.
+    assert!(state.undo());
+    assert_eq!(state.items.len(), 1);
+    assert!(state.item(first).is_some());
 }
 
 #[test]

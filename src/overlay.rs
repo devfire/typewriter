@@ -225,12 +225,17 @@ impl OverlayState {
     }
 
     /// Insert a new empty box and select it. Returns its stable id.
+    /// A previously selected empty box is discarded first (see
+    /// [`Self::select`]); the single checkpoint taken here covers
+    /// both the discard and the insertion, so one undo restores
+    /// the exact pre-`add` state.
     pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> BoxId {
         self.checkpoint();
+        self.discard_empty_selected();
         let id = self.fresh_id();
         self.items
             .push(OverlayText::new(id, page, x_pt, y_top_pt, kind));
-        self.selected = Some(id);
+        self.select(Some(id));
         id
     }
 
@@ -324,15 +329,49 @@ impl OverlayState {
         self.items.iter().filter(|item| item.page == page).collect()
     }
 
+    /// The one route for selection changes: moving the selection
+    /// to a different box (or to nothing) first drops the
+    /// previously selected box if it is empty (a click placed it
+    /// but nothing was typed), so empty boxes cannot pile up as
+    /// the user clicks around. Re-selecting the current box is a
+    /// no-op (it must not drop itself), and an id that names no
+    /// live box is treated as clearing the selection.
+    pub fn select(&mut self, id: Option<BoxId>) {
+        let target = id.filter(|target| self.item(*target).is_some());
+        if self.selected == target {
+            return;
+        }
+        self.drop_empty_selected();
+        self.selected = target;
+    }
+
+    /// Remove the selected box without recording history, if it is
+    /// empty. Callers that need the removal to be undoable either
+    /// checkpoint first ([`Self::drop_empty_selected`]) or have
+    /// already checkpointed the enclosing action ([`Self::add`]).
+    /// Returns whether a box was removed.
+    fn discard_empty_selected(&mut self) -> bool {
+        let Some(sel) = self.selected else {
+            return false;
+        };
+        if !self.item(sel).is_some_and(OverlayText::is_empty) {
+            return false;
+        }
+        self.items.retain(|item| item.id != sel);
+        self.selected = None;
+        true
+    }
+
     /// Drop the selected box if it is empty (click placed it but the
     /// user never typed). Called before selection changes / save.
     pub fn drop_empty_selected(&mut self) {
-        if let Some(sel) = self.selected
-            && self.item(sel).is_some_and(OverlayText::is_empty)
+        if self
+            .selected
+            .and_then(|sel| self.item(sel))
+            .is_some_and(OverlayText::is_empty)
         {
             self.checkpoint();
-            self.items.retain(|item| item.id != sel);
-            self.selected = None;
+            self.discard_empty_selected();
         }
     }
 

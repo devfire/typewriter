@@ -558,8 +558,7 @@ impl TypewriterApp {
         }
         if escape {
             self.mode = Mode::Navigate;
-            self.overlays.drop_empty_selected();
-            self.overlays.selected = None;
+            self.overlays.select(None);
         }
         if delete && let Some(sel) = self.overlays.selected {
             self.overlays.remove(sel);

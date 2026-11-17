@@ -74,6 +74,19 @@ impl TypewriterApp {
         });
     }
 
+    /// Move to `page`, clearing the selection through
+    /// [`crate::overlay::OverlayState::select`] (which also drops a selected
+    /// empty box): a selection must never survive onto a page
+    /// where its box is invisible, or Delete/Duplicate would act
+    /// on a box the user cannot see. No-op on the current page.
+    pub(super) fn change_page(&mut self, page: usize) {
+        if page == self.page {
+            return;
+        }
+        self.overlays.select(None);
+        self.page = page;
+    }
+
     fn page_group(&mut self, ui: &mut egui::Ui) {
         let count = self.page_count();
         group(ui).show(ui, |ui| {
@@ -83,7 +96,7 @@ impl TypewriterApp {
                     .on_hover_text("Previous page")
                     .clicked()
                 {
-                    self.page = self.page.saturating_sub(1);
+                    self.change_page(self.page.saturating_sub(1));
                 }
                 pill(
                     ui,
@@ -98,7 +111,7 @@ impl TypewriterApp {
                     .on_hover_text("Next page")
                     .clicked()
                 {
-                    self.page += 1;
+                    self.change_page(self.page + 1);
                 }
             });
         });
@@ -271,7 +284,7 @@ impl TypewriterApp {
                 }
             });
         if let Some(idx) = select {
-            self.overlays.selected = Some(idx);
+            self.overlays.select(Some(idx));
         }
         if let Some(idx) = remove {
             self.overlays.remove(idx);
@@ -443,7 +456,7 @@ impl TypewriterApp {
         // `items` is small; cloning it per inspector frame is cheap.
         let before = self.overlays.items.clone();
         let Some(item) = self.overlays.item_mut(sel) else {
-            self.overlays.selected = None;
+            self.overlays.select(None);
             return;
         };
         let mut changed = false;

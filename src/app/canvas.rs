@@ -272,13 +272,13 @@ impl TypewriterApp {
                 self.resize_handle(ui, idx, handle_rect, width_pt, zoom);
             }
             if resp.clicked() {
-                self.overlays.selected = Some(idx);
+                self.overlays.select(Some(idx));
             }
             if resp.drag_started() && self.resize_box != Some(idx) {
                 self.overlays.begin_gesture();
             }
             if resp.dragged() && self.resize_box != Some(idx) {
-                self.overlays.selected = Some(idx);
+                self.overlays.select(Some(idx));
                 let delta = resp.drag_delta();
                 if let Some(current) = self.overlays.item_mut(idx) {
                     let (x_pt, y_top_pt) = overlay::clamp_to_page(

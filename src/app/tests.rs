@@ -249,6 +249,26 @@ fn reload_after_save_preserves_page_and_zoom() {
 }
 
 #[test]
+fn changing_page_clears_selection_and_drops_empty_box() {
+    let mut app = test_app();
+    let kept = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.overlays.item_mut(kept).unwrap().text = "keep me".to_string();
+    let empty = app.overlays.add(0, 50.0, 60.0, BoxKind::Text);
+    app.change_page(1);
+    assert_eq!(app.page, 1);
+    assert_eq!(app.overlays.selected, None);
+    assert!(app.overlays.item(empty).is_none(), "empty box dropped");
+    assert_eq!(app.overlays.items.len(), 1);
+    // A non-empty selection is cleared too, but its box stays put:
+    // Delete/Duplicate must never act on an invisible box.
+    app.overlays.select(Some(kept));
+    app.change_page(2);
+    assert_eq!(app.page, 2);
+    assert_eq!(app.overlays.selected, None);
+    assert_eq!(app.overlays.item(kept).unwrap().text, "keep me");
+}
+
+#[test]
 fn reload_after_save_clamps_page_to_new_page_count() {
     let path = write_pdf(3);
     let shorter = write_pdf(1);
