@@ -75,6 +75,7 @@ pub struct OverlayText {
 }
 
 impl OverlayText {
+    #[must_use]
     pub fn new(id: BoxId, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> Self {
         let (size_pt, color) = match kind {
             BoxKind::Text => (12.0, [0, 0, 0]),
@@ -101,6 +102,7 @@ impl OverlayText {
         self.text.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
     }

@@ -12,7 +12,7 @@ jobs:
       - name: Install system dependencies (eframe/winit)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev qpdf
       # Pinned to match rust-toolchain.toml; do not float on stable.
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
@@ -20,3 +20,14 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets -- -D warnings -D clippy::pedantic
       - run: cargo test --locked --workspace
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install system dependencies (eframe/winit)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@nightly
+      - run: cargo install cargo-fuzz --locked
+      - run: cd fuzz && cargo fuzz run open_bake -- -max_total_time=60 -timeout=10

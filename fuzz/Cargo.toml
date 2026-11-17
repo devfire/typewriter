@@ -1,0 +1,19 @@
+[package]
+name = "typewriter-fuzz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+typewriter = { path = ".." }
+tempfile = "3"
+
+[[bin]]
+name = "open_bake"
+path = "fuzz_targets/open_bake.rs"
+test = false
+doc = false

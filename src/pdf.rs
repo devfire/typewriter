@@ -63,6 +63,12 @@ pub struct PdfDoc {
 }
 
 impl PdfDoc {
+    /// Open the PDF at `path`, parsing the page tree into [`PageGeometry`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read, is not a parseable PDF,
+    /// is encrypted, has no pages, or a page has no `MediaBox`/`CropBox`.
     pub fn open(path: &Path) -> Result<Self> {
         let bytes = Arc::new(
             std::fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
@@ -152,6 +158,7 @@ impl PdfDoc {
         embedded.boxes
     }
 
+    #[must_use]
     pub fn page_count(&self) -> usize {
         self.pages.len()
     }
@@ -176,6 +183,12 @@ impl PdfDoc {
     /// has nothing to append to, so its first save is a full write
     /// staged on a clone; that establishes the bytes later saves
     /// append to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a box references an out-of-range page, the boxes
+    /// cannot be embedded, the bake cannot be serialized, or `out` cannot be
+    /// written atomically. The document and `overlays` are left unchanged.
     pub fn bake_and_save(&mut self, overlays: &mut OverlayState, out: &Path) -> Result<()> {
         let mut by_page: BTreeMap<usize, Vec<&OverlayText>> = BTreeMap::new();
         for item in overlays.items.iter().filter(|item| !item.is_empty()) {
@@ -495,6 +508,8 @@ fn append_overlay_stream(
 }
 
 mod bounded;
+#[cfg(test)]
+mod corpus_tests;
 mod embedded;
 mod helvetica;
 mod page_tree;
@@ -502,6 +517,7 @@ mod save;
 mod signature_font;
 mod winansi;
 
+#[allow(unused_imports)]
 pub(crate) use helvetica::helvetica_width_pt;
 pub use winansi::{winansi_bytes, winansi_lines};
 
