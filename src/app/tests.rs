@@ -948,6 +948,55 @@ fn undo_redo_reverts_a_canvas_drag_as_one_step() {
 }
 
 #[test]
+fn undo_mid_drag_still_records_rest_of_drag() {
+    use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, Rect, Vec2};
+
+    let mut app = test_app();
+    let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
+    let item = app.overlays.item_mut(id).unwrap();
+    item.text = "Hello".to_string();
+    item.width_pt = Some(80.0);
+
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
+    let ctx = Context::default();
+    super::theme::apply_theme(&ctx);
+    let btn = |pos, pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    let from = Pos2::new(120.0, 105.0);
+    let mid = Pos2::new(170.0, 155.0);
+    let to = Pos2::new(220.0, 205.0);
+    for events in [
+        Vec::new(),
+        vec![Event::PointerMoved(from)],
+        vec![btn(from, true)],
+        vec![Event::PointerMoved(mid)],
+    ] {
+        let _ = run_canvas(&ctx, &mut app, screen, 1.0, events);
+    }
+    assert!((app.overlays.item(id).unwrap().x_pt - 150.0).abs() <= 1e-4);
+    // Undo while the pointer is still down closes the gesture;
+    // the remaining drag frames must start a new one.
+    app.undo();
+    assert!((app.overlays.item(id).unwrap().x_pt - 100.0).abs() <= f32::EPSILON);
+    for events in [vec![Event::PointerMoved(to)], vec![btn(to, false)]] {
+        let _ = run_canvas(&ctx, &mut app, screen, 1.0, events);
+    }
+    assert!((app.overlays.item(id).unwrap().x_pt - 150.0).abs() <= 1e-4);
+    // The post-undo segment is undoable as its own step: the box
+    // returns to where the undo left it, and is not removed.
+    app.undo();
+    let item = app.overlays.item(id).unwrap();
+    assert!((item.x_pt - 100.0).abs() <= f32::EPSILON);
+    assert!((item.y_top_pt - 100.0).abs() <= f32::EPSILON);
+    app.redo();
+    assert!((app.overlays.item(id).unwrap().x_pt - 150.0).abs() <= 1e-4);
+}
+
+#[test]
 fn app_undo_redo_covers_delete_and_reports_nothing_at_stack_ends() {
     let mut app = test_app();
     app.undo();

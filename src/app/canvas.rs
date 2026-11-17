@@ -278,6 +278,9 @@ impl TypewriterApp {
                 self.overlays.begin_gesture();
             }
             if resp.dragged() && self.resize_box != Some(idx) {
+                // Idempotent: re-arms the gesture after a mid-drag
+                // undo closed it, so the rest of the drag is recorded.
+                self.overlays.begin_gesture();
                 self.overlays.select(Some(idx));
                 let delta = resp.drag_delta();
                 if let Some(current) = self.overlays.item_mut(idx) {
@@ -374,6 +377,8 @@ impl TypewriterApp {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
         }
         if self.resize_box == Some(idx) && resize_resp.dragged() {
+            // Idempotent: re-arms after a mid-drag undo closed the gesture.
+            self.overlays.begin_gesture();
             let delta_pt = resize_resp.drag_delta().x / zoom;
             if let Some(current) = self.overlays.item_mut(idx) {
                 let base = current.width_pt.unwrap_or(width_pt);

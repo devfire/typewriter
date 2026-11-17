@@ -5,6 +5,8 @@
 //! continuous edits (drags, typing, slider drags) bracket
 //! themselves as a *gesture* so the whole edit is one undo step.
 
+use std::collections::VecDeque;
+
 use super::OverlayText;
 
 /// Maximum snapshots kept per stack; each is a clone of the (small)
@@ -13,8 +15,8 @@ const MAX_HISTORY: usize = 100;
 
 #[derive(Debug, Default)]
 pub(super) struct History {
-    undo_stack: Vec<Vec<OverlayText>>,
-    redo_stack: Vec<Vec<OverlayText>>,
+    undo_stack: VecDeque<Vec<OverlayText>>,
+    redo_stack: VecDeque<Vec<OverlayText>>,
     /// Pre-edit snapshot of an in-progress continuous edit, taken by
     /// `begin_gesture*` and pushed by `end_gesture` if it changed.
     gesture: Option<Vec<OverlayText>>,
@@ -25,10 +27,10 @@ impl History {
     /// clear the redo stack: a new action invalidates redone futures.
     /// A snapshot identical to the newest step is not duplicated.
     fn push(&mut self, snapshot: Vec<OverlayText>) {
-        if self.undo_stack.last() != Some(&snapshot) {
-            self.undo_stack.push(snapshot);
+        if self.undo_stack.back() != Some(&snapshot) {
+            self.undo_stack.push_back(snapshot);
             if self.undo_stack.len() > MAX_HISTORY {
-                self.undo_stack.remove(0);
+                self.undo_stack.pop_front();
             }
         }
         self.redo_stack.clear();
@@ -84,24 +86,24 @@ impl History {
     /// one onto the redo stack. `false` when nothing to undo.
     pub(super) fn undo(&mut self, items: &mut Vec<OverlayText>) -> bool {
         self.end_gesture(items);
-        let Some(previous) = self.undo_stack.pop() else {
+        let Some(previous) = self.undo_stack.pop_back() else {
             return false;
         };
         let current = std::mem::replace(items, previous);
-        self.redo_stack.push(current);
+        self.redo_stack.push_back(current);
         true
     }
 
     /// Inverse of `undo`. `false` when nothing to redo.
     pub(super) fn redo(&mut self, items: &mut Vec<OverlayText>) -> bool {
         self.end_gesture(items);
-        let Some(next) = self.redo_stack.pop() else {
+        let Some(next) = self.redo_stack.pop_back() else {
             return false;
         };
         let current = std::mem::replace(items, next);
-        self.undo_stack.push(current);
+        self.undo_stack.push_back(current);
         if self.undo_stack.len() > MAX_HISTORY {
-            self.undo_stack.remove(0);
+            self.undo_stack.pop_front();
         }
         true
     }

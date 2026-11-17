@@ -279,6 +279,24 @@ fn gesture_coalesces_many_mutations_into_one_undo_step() {
 }
 
 #[test]
+fn history_is_capped_and_drops_the_oldest_snapshots() {
+    let mut state = OverlayState::default();
+    let id = state.add(0, 10.0, 20.0, BoxKind::Text);
+    for step in 1..=150 {
+        state.checkpoint();
+        state.item_mut(id).unwrap().text = format!("v{step}");
+    }
+    // Only the newest 100 snapshots survive; undoing all of them
+    // lands on v50, not on the initial empty text.
+    let mut undos = 0;
+    while state.undo() {
+        undos += 1;
+    }
+    assert_eq!(undos, 100);
+    assert_eq!(state.item(id).unwrap().text, "v50");
+}
+
+#[test]
 fn deleting_the_only_added_box_returns_to_clean() {
     let mut state = OverlayState::default();
     let id = state.add(0, 10.0, 20.0, BoxKind::Text);
