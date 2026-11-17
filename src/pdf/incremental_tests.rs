@@ -126,3 +126,91 @@ fn failed_incremental_save_restores_doc_and_retry_bakes_once() {
     let text = pdf.doc.extract_text(&[1]).unwrap();
     assert_eq!(text.matches("Hello").count(), 1, "baked >1x: {text:?}");
 }
+
+#[test]
+fn failed_edit_save_restores_stripped_doc_and_retry_bakes_once() {
+    // Editable flow: save BEFORE, reopen/claim, edit to AFTER, fail, retry.
+    // The failed save must leave the stripped logical document intact so
+    // the retry bakes over stripped contents instead of duplicating text.
+    let (mut pdf, out0) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "BEFORE".to_string();
+    pdf.bake_and_save(&mut overlays, out0.path()).unwrap();
+
+    let mut pdf = PdfDoc::open(out0.path()).unwrap();
+    let mut overlays = OverlayState::default();
+    overlays.restore_embedded(pdf.take_embedded_boxes());
+    assert_eq!(overlays.items.len(), 1);
+    let id = overlays.items.first().unwrap().id;
+    overlays.item_mut(id).unwrap().text = "AFTER".to_string();
+
+    let page_id = pdf.page_ids[0];
+    let stripped_len = pdf.doc.get_page_contents(page_id).len();
+    let missing = TempFile::new("incremental-edit-missing");
+    let bad_out = missing.path().join("out.pdf");
+    assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
+    assert_eq!(
+        pdf.doc.get_page_contents(page_id).len(),
+        stripped_len,
+        "failed save resurrected stripped streams"
+    );
+    assert_eq!(overlays.items.len(), 1);
+    assert!(overlays.is_dirty());
+
+    let out1 = TempFile::new("incremental-edit-retry");
+    pdf.bake_and_save(&mut overlays, out1.path()).unwrap();
+    let text = pdf.doc.extract_text(&[1]).unwrap();
+    assert!(text.contains("AFTER"), "edited text missing: {text:?}");
+    assert!(!text.contains("BEFORE"), "old text still baked: {text:?}");
+    assert_eq!(text.matches("AFTER").count(), 1, "duplicated: {text:?}");
+
+    let mut reopened = PdfDoc::open(out1.path()).unwrap();
+    let boxes = reopened.take_embedded_boxes();
+    assert_eq!(boxes.len(), 1);
+    assert_eq!(boxes[0].text, "AFTER");
+}
+
+#[test]
+fn failed_save_after_deleting_all_restored_boxes_retry_clears_text() {
+    // Same stripped-rollback guarantee when the edit deletes every box:
+    // the retry must drop the old baked text and its payload.
+    let (mut pdf, out0) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "BEFORE".to_string();
+    pdf.bake_and_save(&mut overlays, out0.path()).unwrap();
+
+    let mut pdf = PdfDoc::open(out0.path()).unwrap();
+    let mut overlays = OverlayState::default();
+    overlays.restore_embedded(pdf.take_embedded_boxes());
+    assert_eq!(overlays.items.len(), 1);
+    let ids: Vec<_> = overlays.items.iter().map(|item| item.id).collect();
+    for id in ids {
+        overlays.remove(id);
+    }
+    assert!(overlays.items.is_empty());
+
+    let page_id = pdf.page_ids[0];
+    let stripped_len = pdf.doc.get_page_contents(page_id).len();
+    let missing = TempFile::new("incremental-delete-missing");
+    let bad_out = missing.path().join("out.pdf");
+    assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
+    assert_eq!(
+        pdf.doc.get_page_contents(page_id).len(),
+        stripped_len,
+        "failed save resurrected stripped streams"
+    );
+    assert!(overlays.items.is_empty());
+
+    let out1 = TempFile::new("incremental-delete-retry");
+    pdf.bake_and_save(&mut overlays, out1.path()).unwrap();
+    let text = pdf.doc.extract_text(&[1]).unwrap();
+    assert!(
+        !text.contains("BEFORE"),
+        "deleted text still baked: {text:?}"
+    );
+
+    let mut reopened = PdfDoc::open(out1.path()).unwrap();
+    assert!(reopened.take_embedded_boxes().is_empty());
+}

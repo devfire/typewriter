@@ -4,8 +4,8 @@
 //! only the objects a bake added or changed are appended, followed
 //! by a new xref section and a trailer whose `/Prev` chains to the
 //! previous xref (`lopdf::IncrementalDocument`). The in-memory
-//! document is mutated directly; on failure it is restored by
-//! re-parsing the untouched backing bytes (see `bake_and_save`).
+//! document is mutated directly; on failure the pre-save logical
+//! document is restored (see `bake_and_save`).
 
 use super::{PdfDoc, append_overlay_stream, box_operations, signature_font};
 use crate::overlay::{BoxKind, OverlayText};

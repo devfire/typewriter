@@ -172,9 +172,10 @@ impl PdfDoc {
     /// untouched original bytes, with the new trailer's `/Prev`
     /// chaining to the previous xref. The bake mutates `self.doc`
     /// (the merged logical document) directly instead of a staged
-    /// clone; on any failure `self.doc` is restored by re-parsing
-    /// the untouched `bytes`, `overlays` is left intact, and a retry
-    /// cannot double-bake earlier pages. The file write itself is
+    /// clone; on any failure the pre-save logical document is restored
+    /// (from a snapshot when claimed pages differ from `bytes`, else by
+    /// re-parsing the untouched `bytes`), `overlays` is left intact, and
+    /// a retry cannot double-bake earlier pages. The file write itself is
     /// atomic (temp file in the target directory + `rename`), so an
     /// in-place save never leaves a truncated original behind. A
     /// document built in memory (no backing bytes, e.g. in tests)
@@ -253,6 +254,12 @@ impl PdfDoc {
             self.dirty.clear();
             saved
         } else {
+            // Snapshot the pre-save logical document when it differs from
+            // the backing bytes (stripped pages tracked in `dirty`), so a
+            // failed save restores stripped contents instead of resurrecting
+            // the old baked streams from the on-disk revision.
+            let doc_backup = (!self.dirty.is_empty()).then(|| self.doc.clone());
+            let dirty_backup = self.dirty.clone();
             match self.bake_and_save_incremental(
                 &by_page,
                 &baked_boxes,
@@ -262,14 +269,18 @@ impl PdfDoc {
             ) {
                 Ok(saved) => saved,
                 Err(err) => {
-                    // Restore the merged document from the untouched
-                    // backing bytes; if even that fails the save's
-                    // error is the one the caller needs.
-                    if let Ok(restored) = Document::load_mem(&self.bytes) {
+                    if let Some(backup) = doc_backup {
+                        // The pre-save document differed from the backing
+                        // bytes (claimed/stripped pages): restore the
+                        // logical document, not the on-disk revision, so
+                        // a retry bakes over stripped contents.
+                        self.doc = backup;
+                        self.dirty = dirty_backup;
+                    } else if let Ok(restored) = Document::load_mem(&self.bytes) {
+                        // No pre-bake in-memory changes, so the parsed
+                        // backing bytes are the logical document; if even
+                        // that fails the save's error is the one needed.
                         self.doc = restored;
-                        // The restored document matches the backing
-                        // bytes again, so pre-bake in-memory changes
-                        // recorded in `dirty` are gone with it.
                         self.dirty.clear();
                     }
                     return Err(err);
