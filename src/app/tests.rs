@@ -22,6 +22,7 @@ fn test_app() -> TypewriterApp {
         focus_editor: false,
         fit_pending: false,
         resize_box: None,
+        inspector_gesture: None,
         clipboard: None,
         close_state: CloseState::Idle,
         overwrite_confirmed_for: None,
@@ -579,6 +580,67 @@ fn placed_box_editor_focuses_so_typing_edits_the_box() {
     // Typing without clicking the sidebar must land in the new box.
     run(&mut app, vec![Event::Text("hi".to_owned())]);
     assert_eq!(app.overlays.items[0].text, "hi");
+}
+
+#[test]
+fn typing_burst_with_key_release_frames_is_one_undo_step() {
+    use eframe::egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, Vec2};
+
+    let mut app = test_app();
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.focus_editor = true;
+
+    let ctx = Context::default();
+    let run = |app: &mut TypewriterApp, events: Vec<Event>, time: f64| {
+        let input = RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0))),
+            time: Some(time),
+            events,
+            ..RawInput::default()
+        };
+        let _output = ctx.run(input, |ctx| app.sidebar(ctx));
+    };
+    // Grant the editor focus.
+    run(&mut app, Vec::new(), 0.0);
+    run(&mut app, Vec::new(), 0.016);
+
+    // egui-winit repaints on every key release: each keystroke is a
+    // changed (press) frame followed by an unchanged (release) frame.
+    // The release frames must not split the burst into per-key steps.
+    for (index, ch) in "hello".chars().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let press_time = 0.1 + index as f64 * 0.05;
+        run(&mut app, vec![Event::Text(ch.to_string())], press_time);
+        run(
+            &mut app,
+            vec![Event::Key {
+                key: Key::A,
+                physical_key: None,
+                pressed: false,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            }],
+            press_time + 0.02,
+        );
+    }
+    assert_eq!(app.overlays.items[0].text, "hello");
+    assert!(app.overlays.undo(), "typing burst must be undoable");
+    assert_eq!(
+        app.overlays.items[0].text, "",
+        "one undo must revert the whole burst, not the last keystroke"
+    );
+    assert!(app.overlays.redo());
+    assert_eq!(app.overlays.items[0].text, "hello");
+
+    // After an idle gap the next keystroke is a separate undo step.
+    run(&mut app, Vec::new(), 2.0);
+    run(&mut app, vec![Event::Text("!".to_owned())], 2.1);
+    run(&mut app, Vec::new(), 2.12);
+    assert_eq!(app.overlays.items[0].text, "hello!");
+    assert!(app.overlays.undo());
+    assert_eq!(app.overlays.items[0].text, "hello");
+    assert!(app.overlays.undo());
+    assert_eq!(app.overlays.items[0].text, "");
 }
 
 #[test]

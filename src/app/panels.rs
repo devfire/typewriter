@@ -14,6 +14,13 @@ use super::{
 use crate::overlay::{BoxId, BoxKind, OverlayText};
 use eframe::egui;
 
+/// Idle gap, in egui-time seconds, that ends an inspector edit
+/// burst: typing paused this long starts a new undo step. Matches
+/// the grouping `egui::util::undoer::Undoer` applies with its
+/// default `stable_time`, without replacing the snapshot history
+/// that canvas drags and discrete actions also use.
+const INSPECTOR_GESTURE_IDLE_SECS: f64 = 1.0;
+
 impl TypewriterApp {
     pub(super) fn toolbar(&mut self, ctx: &egui::Context) {
         let frame = egui::Frame::new()
@@ -421,21 +428,83 @@ impl TypewriterApp {
         });
     }
 
+    /// Close any open inspector gesture, recording it as one undo
+    /// step if it changed anything.
+    fn end_inspector_gesture(&mut self) {
+        self.overlays.end_gesture();
+        self.inspector_gesture = None;
+    }
+
     /// Fold one inspector frame into undo history. One gesture per
     /// continuous edit (typing burst, slider or color drag): the
-    /// first changed frame opens it with the pre-edit snapshot; it
-    /// closes once a frame passes with no change and no pointer
-    /// button held (a held pointer may just be paused mid-drag).
+    /// first changed frame opens it with the pre-edit snapshot.
+    /// It closes only when a control loses focus, when the edited
+    /// box changes, or after `INSPECTOR_GESTURE_IDLE_SECS` with no
+    /// change — never on a merely unchanged frame, because
+    /// egui-winit repaints on every key *release*, so each keystroke
+    /// is followed by an unchanged frame that used to split the
+    /// burst into one undo step per key. A held pointer suppresses
+    /// the idle close: it may just be paused mid-drag.
     fn record_inspector_edit(
         &mut self,
         before: Vec<OverlayText>,
+        selected: BoxId,
         changed: bool,
+        lost_focus: bool,
         pointer_down: bool,
+        now: f64,
     ) {
+        if let Some((gesture_box, last_change)) = self.inspector_gesture
+            && (gesture_box != selected
+                || (!pointer_down && now - last_change >= INSPECTOR_GESTURE_IDLE_SECS))
+        {
+            self.end_inspector_gesture();
+        }
         if changed {
             self.overlays.begin_gesture_with(before);
-        } else if !pointer_down {
-            self.overlays.end_gesture();
+            self.inspector_gesture = Some((selected, now));
+        }
+        if lost_focus {
+            self.end_inspector_gesture();
+        }
+    }
+
+    /// Record one inspector frame (see `record_inspector_edit`) and,
+    /// while a burst is open with the pointer up, wake once it has
+    /// been idle long enough to close — even if no further input
+    /// arrives in the meantime.
+    fn finish_inspector_edit(
+        &mut self,
+        ui: &egui::Ui,
+        before: Vec<OverlayText>,
+        selected: BoxId,
+        changed: bool,
+        lost_focus: bool,
+    ) {
+        let pointer_down = ui.input(|i| i.pointer.any_down());
+        let now = ui.input(|i| i.time);
+        self.record_inspector_edit(before, selected, changed, lost_focus, pointer_down, now);
+        if self.inspector_gesture.is_some() && !pointer_down {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(
+                INSPECTOR_GESTURE_IDLE_SECS,
+            ));
+        }
+    }
+
+    /// "Delete box" button below the inspector controls.
+    fn delete_selected_button(&mut self, ui: &mut egui::Ui, sel: BoxId) {
+        ui.add_space(12.0);
+        let delete_label = egui::RichText::new("Delete box")
+            .size(15.0)
+            .strong()
+            .color(egui::Color32::WHITE);
+        let delete_btn = egui::Button::new(delete_label)
+            .min_size(egui::vec2(ui.available_width(), BTN_H))
+            .fill(DANGER)
+            .stroke(egui::Stroke::NONE)
+            .corner_radius(RADIUS);
+        if ui.add(delete_btn).clicked() {
+            self.overlays.remove(sel);
         }
     }
 
@@ -444,6 +513,8 @@ impl TypewriterApp {
         // keyboard focus on the next frame; never retain it past here.
         let focus_editor = std::mem::take(&mut self.focus_editor);
         let Some(sel) = self.overlays.selected else {
+            // Selection gone: any inspector burst is complete.
+            self.end_inspector_gesture();
             hint_card(
                 ui,
                 "Nothing selected.",
@@ -456,10 +527,12 @@ impl TypewriterApp {
         // `items` is small; cloning it per inspector frame is cheap.
         let before = self.overlays.items.clone();
         let Some(item) = self.overlays.item_mut(sel) else {
+            self.end_inspector_gesture();
             self.overlays.select(None);
             return;
         };
         let mut changed = false;
+        let mut lost_focus = false;
         let inner_width = (ui.available_width() - 26.0).max(0.0);
         egui::Frame::new()
             .fill(ui.visuals().faint_bg_color)
@@ -506,6 +579,7 @@ impl TypewriterApp {
                     );
                 }
                 changed |= edit.changed();
+                lost_focus |= edit.lost_focus();
                 ui.add_space(10.0);
                 let size_range = if is_signature {
                     16.0..=64.0
@@ -519,30 +593,21 @@ impl TypewriterApp {
                         .text("Size"),
                 );
                 changed |= size_resp.changed();
+                lost_focus |= size_resp.lost_focus();
                 ui.add_space(6.0);
-                changed |= box_width_control(ui, item);
+                let (width_changed, width_lost_focus) = box_width_control(ui, item);
+                changed |= width_changed;
+                lost_focus |= width_lost_focus;
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new("Color").size(13.5));
                     let color_resp =
                         egui::widgets::color_picker::color_edit_button_srgb(ui, &mut item.color);
                     changed |= color_resp.changed();
+                    lost_focus |= color_resp.lost_focus();
                 });
             });
-        let pointer_down = ui.input(|i| i.pointer.any_down());
-        self.record_inspector_edit(before, changed, pointer_down);
-        ui.add_space(12.0);
-        let delete_label = egui::RichText::new("Delete box")
-            .size(15.0)
-            .strong()
-            .color(egui::Color32::WHITE);
-        let delete_btn = egui::Button::new(delete_label)
-            .min_size(egui::vec2(ui.available_width(), BTN_H))
-            .fill(DANGER)
-            .stroke(egui::Stroke::NONE)
-            .corner_radius(RADIUS);
-        if ui.add(delete_btn).clicked() {
-            self.overlays.remove(sel);
-        }
+        self.finish_inspector_edit(ui, before, sel, changed, lost_focus);
+        self.delete_selected_button(ui, sel);
     }
 }

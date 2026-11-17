@@ -78,9 +78,13 @@ pub(super) fn mode_button(ui: &mut egui::Ui, label: &str, active: bool) -> egui:
 
 /// "Box width" row: fixed-width drag value with Auto reset, or the
 /// auto-fit state with a hint about the on-page resize handle.
-/// Returns whether the width changed.
-pub(super) fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::OverlayText) -> bool {
+/// Returns `(changed, lost_focus)` for undo-gesture grouping.
+pub(super) fn box_width_control(
+    ui: &mut egui::Ui,
+    item: &mut crate::overlay::OverlayText,
+) -> (bool, bool) {
     let mut changed = false;
+    let mut lost_focus = false;
     ui.horizontal(|ui| {
         ui.set_max_width(ui.available_width());
         ui.label(
@@ -101,6 +105,7 @@ pub(super) fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::Ov
                         .suffix(" pt"),
                 );
                 changed |= width_resp.changed();
+                lost_focus |= width_resp.lost_focus();
                 if ui.small_button("Auto").clicked() {
                     reset_width = true;
                 }
@@ -121,7 +126,7 @@ pub(super) fn box_width_control(ui: &mut egui::Ui, item: &mut crate::overlay::Ov
             changed = true;
         }
     });
-    changed
+    (changed, lost_focus)
 }
 
 /// Muted rounded hint card with a title and explanation.

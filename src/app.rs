@@ -135,6 +135,12 @@ pub struct TypewriterApp {
     fit_pending: bool,
     /// Box currently being width-resized via its corner handle, if any.
     resize_box: Option<BoxId>,
+    /// Inspector edit burst in progress: the box being edited and
+    /// the egui time of its last change. `None` when no inspector
+    /// gesture is open; `app::panels` closes it on lost focus, a
+    /// selection change, or an idle gap — never on a merely
+    /// unchanged frame (key-release repaints).
+    inspector_gesture: Option<(BoxId, f64)>,
     /// Internal clipboard: snapshot of the last copied/cut box
     /// (text or signature). Not the OS clipboard — a box carries
     /// kind/size/color/width, not just text. Survives `load`, so a
@@ -172,6 +178,7 @@ impl TypewriterApp {
             focus_editor: false,
             fit_pending: false,
             resize_box: None,
+            inspector_gesture: None,
             clipboard: None,
             close_state: CloseState::Idle,
             overwrite_confirmed_for: None,
@@ -224,6 +231,7 @@ impl TypewriterApp {
         self.overlays.restore_embedded(restored);
         self.renderer.invalidate();
         self.resize_box = None;
+        self.inspector_gesture = None;
         self.focus_editor = false;
         self.canvas_view = None;
         self.page = 0;
@@ -415,6 +423,9 @@ impl TypewriterApp {
     }
 
     fn sync_after_history(&mut self) {
+        // Undo/redo already closed the history gesture; drop the
+        // inspector's tracking of it so the next edit starts fresh.
+        self.inspector_gesture = None;
         if self
             .resize_box
             .is_some_and(|id| self.overlays.item(id).is_none())
