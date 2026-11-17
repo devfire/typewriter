@@ -274,6 +274,9 @@ impl TypewriterApp {
             if resp.clicked() {
                 self.overlays.selected = Some(idx);
             }
+            if resp.drag_started() && self.resize_box != Some(idx) {
+                self.overlays.begin_gesture();
+            }
             if resp.dragged() && self.resize_box != Some(idx) {
                 self.overlays.selected = Some(idx);
                 let delta = resp.drag_delta();
@@ -284,6 +287,9 @@ impl TypewriterApp {
                     current.y_top_pt = (current.y_top_pt + delta.y / zoom).clamp(0.0, max_top_pt);
                 }
                 self.overlays.dirty = true;
+            }
+            if resp.drag_stopped() {
+                self.overlays.end_gesture();
             }
             let Some(item) = self.overlays.item(idx) else {
                 continue;
@@ -352,12 +358,14 @@ impl TypewriterApp {
             .interact(handle_rect, id, egui::Sense::drag())
             .on_hover_text("Drag to widen/narrow the box \u{00b7} double-click for auto-fit");
         if resize_resp.double_clicked() {
+            self.overlays.checkpoint();
             if let Some(current) = self.overlays.item_mut(idx) {
                 current.width_pt = None;
             }
             self.overlays.dirty = true;
         }
         if resize_resp.drag_started() {
+            self.overlays.begin_gesture();
             self.resize_box = Some(idx);
         }
         if resize_resp.hovered() || resize_resp.dragged() {
@@ -372,6 +380,7 @@ impl TypewriterApp {
             self.overlays.dirty = true;
         }
         if resize_resp.drag_stopped() {
+            self.overlays.end_gesture();
             self.resize_box = None;
         }
     }

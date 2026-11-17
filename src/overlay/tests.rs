@@ -150,3 +150,88 @@ fn removing_earlier_box_keeps_selected_identity() {
     assert_eq!(state.selected, None);
     assert_eq!(state.items.len(), 1);
 }
+
+#[test]
+fn undo_redo_reverses_add_remove_and_cut() {
+    let mut state = OverlayState::default();
+    assert!(!state.can_undo());
+    assert!(!state.undo());
+    let id = state.add(0, 10.0, 20.0, BoxKind::Text);
+    state.item_mut(id).unwrap().text = "hello".to_string();
+    assert!(state.can_undo());
+    // Add is one step: undoing it removes the box and the unsaved flag.
+    assert!(state.undo());
+    assert_eq!(state.items, Vec::new());
+    assert_eq!(state.selected, None);
+    assert!(!state.dirty);
+    assert!(state.can_redo());
+    assert!(state.redo());
+    assert_eq!(state.items.len(), 1);
+    assert!(state.dirty);
+    // Delete, then Cut on the restored box, are each reversible.
+    state.remove(id);
+    assert_eq!(state.items, Vec::new());
+    assert!(state.undo());
+    assert_eq!(state.item(id).unwrap().text, "hello");
+    state.selected = Some(id);
+    assert!(state.cut_selected().is_some());
+    assert_eq!(state.items, Vec::new());
+    assert!(state.undo());
+    assert_eq!(state.item(id).unwrap().text, "hello");
+    assert!(state.redo());
+    assert_eq!(state.items, Vec::new());
+}
+
+#[test]
+fn new_action_clears_redo_and_undone_add_id_is_not_reused() {
+    let mut state = OverlayState::default();
+    let first = state.add(0, 10.0, 20.0, BoxKind::Text);
+    assert!(state.undo());
+    assert!(state.can_redo());
+    let second = state.add(0, 30.0, 40.0, BoxKind::Text);
+    assert_ne!(second, first, "next_id must not rewind with undo");
+    assert!(!state.can_redo());
+    assert!(!state.redo());
+    assert_eq!(state.items.len(), 1);
+    assert_eq!(state.items[0].id, second);
+}
+
+#[test]
+fn gesture_coalesces_many_mutations_into_one_undo_step() {
+    let mut state = OverlayState::default();
+    let id = state.add(0, 10.0, 20.0, BoxKind::Text);
+    state.begin_gesture();
+    for step in 1..=10 {
+        let item = state.item_mut(id).unwrap();
+        #[allow(clippy::cast_precision_loss)]
+        {
+            item.x_pt = 10.0 + step as f32;
+        }
+        item.text = format!("step {step}");
+    }
+    state.dirty = true;
+    state.end_gesture();
+    // One undo reverts the whole drag/typing burst, not each frame.
+    assert!(state.undo());
+    let item = state.item(id).unwrap();
+    assert!((item.x_pt - 10.0).abs() < f32::EPSILON);
+    assert_eq!(item.text, "");
+    assert!(state.redo());
+    assert_eq!(state.item(id).unwrap().text, "step 10");
+    // A gesture that changes nothing records no step.
+    state.begin_gesture();
+    state.end_gesture();
+    assert!(state.undo());
+    assert_eq!(state.item(id).unwrap().text, "");
+}
+
+#[test]
+fn clear_baked_clears_history_so_baked_boxes_stay_gone() {
+    let mut state = OverlayState::default();
+    state.add(0, 10.0, 20.0, BoxKind::Text);
+    state.clear_baked();
+    assert!(!state.can_undo());
+    assert!(!state.can_redo());
+    assert!(!state.undo());
+    assert_eq!(state.items, Vec::new());
+}

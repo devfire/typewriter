@@ -694,6 +694,56 @@ fn dragging_box_clamps_to_page_bounds() {
 }
 
 #[test]
+fn undo_redo_reverts_a_canvas_drag_as_one_step() {
+    use eframe::egui::{Context, Pos2, Rect, Vec2};
+
+    let mut app = test_app();
+    let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
+    let item = app.overlays.item_mut(id).unwrap();
+    item.text = "Hello".to_string();
+    item.width_pt = Some(80.0);
+
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
+    drag_canvas(
+        &Context::default(),
+        &mut app,
+        screen,
+        Pos2::new(120.0, 105.0),
+        Pos2::new(220.0, 205.0),
+    );
+    let dragged = app.overlays.item(id).unwrap();
+    assert!((dragged.x_pt - 200.0).abs() <= 1e-4, "got {}", dragged.x_pt);
+
+    app.undo();
+    let item = app.overlays.item(id).unwrap();
+    assert!(
+        (item.x_pt - 100.0).abs() <= f32::EPSILON,
+        "got {}",
+        item.x_pt
+    );
+    assert!((item.y_top_pt - 100.0).abs() <= f32::EPSILON);
+    app.redo();
+    let item = app.overlays.item(id).unwrap();
+    assert!((item.x_pt - 200.0).abs() <= 1e-4, "got {}", item.x_pt);
+}
+
+#[test]
+fn app_undo_redo_covers_delete_and_reports_nothing_at_stack_ends() {
+    let mut app = test_app();
+    app.undo();
+    assert_eq!(app.status, "");
+    let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.overlays.remove(id);
+    assert_eq!(app.overlays.items, Vec::new());
+    app.undo();
+    assert_eq!(app.overlays.items.len(), 1);
+    assert_eq!(app.status, "Undid");
+    app.redo();
+    assert_eq!(app.overlays.items, Vec::new());
+    assert_eq!(app.status, "Redid");
+}
+
+#[test]
 fn preview_baseline_matches_baked_baseline() {
     use eframe::egui::{Context, Pos2, Rect, Shape, Vec2};
 

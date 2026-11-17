@@ -36,6 +36,18 @@ const SHORTCUT_PASTE: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::V);
 const SHORTCUT_DUPLICATE: egui::KeyboardShortcut =
     egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::D);
+const SHORTCUT_UNDO: egui::KeyboardShortcut =
+    egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
+const SHORTCUT_REDO: egui::KeyboardShortcut = egui::KeyboardShortcut::new(
+    egui::Modifiers {
+        alt: false,
+        ctrl: false,
+        shift: true,
+        mac_cmd: false,
+        command: true,
+    },
+    egui::Key::Z,
+);
 
 /// Last rendered canvas geometry and user-controlled scroll offset.
 /// Preserves the page's screen position when a panel resize moves the canvas.
@@ -369,6 +381,32 @@ impl TypewriterApp {
         }
     }
 
+    /// Undo the last overlay edit (see `OverlayState::undo`). A resize
+    /// handle pointing at a box the restored snapshot lacks is dropped.
+    pub(super) fn undo(&mut self) {
+        if self.overlays.undo() {
+            self.sync_after_history();
+            self.status = "Undid".to_string();
+        }
+    }
+
+    /// Redo an edit undone by [`Self::undo`].
+    pub(super) fn redo(&mut self) {
+        if self.overlays.redo() {
+            self.sync_after_history();
+            self.status = "Redid".to_string();
+        }
+    }
+
+    fn sync_after_history(&mut self) {
+        if self
+            .resize_box
+            .is_some_and(|id| self.overlays.item(id).is_none())
+        {
+            self.resize_box = None;
+        }
+    }
+
     /// Duplicate the selected box in place, leaving the clipboard alone.
     pub(super) fn duplicate_selected(&mut self) {
         if let Some(id) = self.overlays.duplicate_selected()
@@ -383,45 +421,61 @@ impl TypewriterApp {
         if matches!(self.close_state, CloseState::Prompting(_)) || ctx.wants_keyboard_input() {
             return;
         }
-        let (open, save, copy, cut, paste, duplicate, zoom_in, zoom_out, escape, delete) = ctx
-            .input_mut(|i| {
-                // eframe/egui-winit intercepts Ctrl/Cmd+C/X/V and emits
-                // `Event::Copy`/`Cut`/`Paste` instead of `Event::Key`, so
-                // `consume_shortcut` alone never sees them. Consume those
-                // events here (a focused text editor is guarded above and
-                // keeps its native handling). The `consume_shortcut` calls
-                // remain for backends that do deliver the key press.
-                let (mut copy_event, mut cut_event, mut paste_event) = (false, false, false);
-                i.events.retain(|event| match event {
-                    egui::Event::Copy => {
-                        copy_event = true;
-                        false
-                    }
-                    egui::Event::Cut => {
-                        cut_event = true;
-                        false
-                    }
-                    egui::Event::Paste(_) => {
-                        paste_event = true;
-                        false
-                    }
-                    _ => true,
-                });
-                (
-                    i.consume_shortcut(&SHORTCUT_OPEN),
-                    i.consume_shortcut(&SHORTCUT_SAVE),
-                    i.consume_shortcut(&SHORTCUT_COPY) || copy_event,
-                    i.consume_shortcut(&SHORTCUT_CUT) || cut_event,
-                    i.consume_shortcut(&SHORTCUT_PASTE) || paste_event,
-                    i.consume_shortcut(&SHORTCUT_DUPLICATE),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
-                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
-                    i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
-                )
+        let (
+            open,
+            save,
+            copy,
+            cut,
+            paste,
+            duplicate,
+            redo,
+            undo,
+            zoom_in,
+            zoom_out,
+            escape,
+            delete,
+        ) = ctx.input_mut(|i| {
+            // eframe/egui-winit intercepts Ctrl/Cmd+C/X/V and emits
+            // `Event::Copy`/`Cut`/`Paste` instead of `Event::Key`, so
+            // `consume_shortcut` alone never sees them. Consume those
+            // events here (a focused text editor is guarded above and
+            // keeps its native handling). The `consume_shortcut` calls
+            // remain for backends that do deliver the key press.
+            let (mut copy_event, mut cut_event, mut paste_event) = (false, false, false);
+            i.events.retain(|event| match event {
+                egui::Event::Copy => {
+                    copy_event = true;
+                    false
+                }
+                egui::Event::Cut => {
+                    cut_event = true;
+                    false
+                }
+                egui::Event::Paste(_) => {
+                    paste_event = true;
+                    false
+                }
+                _ => true,
             });
+            (
+                i.consume_shortcut(&SHORTCUT_OPEN),
+                i.consume_shortcut(&SHORTCUT_SAVE),
+                i.consume_shortcut(&SHORTCUT_COPY) || copy_event,
+                i.consume_shortcut(&SHORTCUT_CUT) || cut_event,
+                i.consume_shortcut(&SHORTCUT_PASTE) || paste_event,
+                i.consume_shortcut(&SHORTCUT_DUPLICATE),
+                // Redo before Undo: both share Key::Z, and a
+                // Ctrl+Shift+Z press must not be taken as Undo.
+                i.consume_shortcut(&SHORTCUT_REDO),
+                i.consume_shortcut(&SHORTCUT_UNDO),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Plus)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Equals),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Minus),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape),
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
+            )
+        });
         if open {
             self.open_dialog();
         }
@@ -444,6 +498,16 @@ impl TypewriterApp {
         }
         if duplicate {
             self.duplicate_selected();
+        }
+        // While a text editor has keyboard focus `handle_shortcuts`
+        // returns early above, so Ctrl+Z there keeps egui's native
+        // per-widget text undo; this global history only runs when
+        // no editor wants the keyboard.
+        if undo {
+            self.undo();
+        }
+        if redo {
+            self.redo();
         }
         if zoom_in {
             self.zoom = (self.zoom * 1.25).clamp(MIN_ZOOM, MAX_ZOOM);

@@ -387,6 +387,44 @@ impl TypewriterApp {
                 self.duplicate_selected();
             }
         });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if btn(
+                ui,
+                self.overlays.can_undo(),
+                "Undo",
+                "Undo last edit  (Ctrl+Z)",
+            ) {
+                self.undo();
+            }
+            if btn(
+                ui,
+                self.overlays.can_redo(),
+                "Redo",
+                "Redo undone edit  (Ctrl+Shift+Z)",
+            ) {
+                self.redo();
+            }
+        });
+    }
+
+    /// Fold one inspector frame into undo history. One gesture per
+    /// continuous edit (typing burst, slider or color drag): the
+    /// first changed frame opens it with the pre-edit snapshot; it
+    /// closes once a frame passes with no change and no pointer
+    /// button held (a held pointer may just be paused mid-drag).
+    fn record_inspector_edit(
+        &mut self,
+        before: Vec<OverlayText>,
+        changed: bool,
+        pointer_down: bool,
+    ) {
+        if changed {
+            self.overlays.begin_gesture_with(before);
+            self.overlays.dirty = true;
+        } else if !pointer_down {
+            self.overlays.end_gesture();
+        }
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
@@ -401,6 +439,10 @@ impl TypewriterApp {
             );
             return;
         };
+        // Pre-edit snapshot for undo: the controls below mutate the
+        // box in place, so history needs the state from before them.
+        // `items` is small; cloning it per inspector frame is cheap.
+        let before = self.overlays.items.clone();
         let Some(item) = self.overlays.item_mut(sel) else {
             self.overlays.selected = None;
             return;
@@ -475,9 +517,8 @@ impl TypewriterApp {
                     changed |= color_resp.changed();
                 });
             });
-        if changed {
-            self.overlays.dirty = true;
-        }
+        let pointer_down = ui.input(|i| i.pointer.any_down());
+        self.record_inspector_edit(before, changed, pointer_down);
         ui.add_space(12.0);
         let delete_label = egui::RichText::new("Delete box")
             .size(15.0)

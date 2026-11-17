@@ -7,6 +7,9 @@
 
 use eframe::egui::{Pos2, Rect};
 
+mod history;
+use history::History;
+
 /// Fraction of the font size from the top of the em box to the baseline.
 pub const ASCENT: f32 = 0.8;
 /// Line spacing as a multiple of the font size.
@@ -85,15 +88,94 @@ impl OverlayText {
 }
 
 /// All overlay state for the open document.
+///
+/// Undo/redo is a snapshot stack of `items` (see [`Self::undo`]):
+/// discrete mutators ([`Self::add`], [`Self::remove`],
+/// [`Self::paste`], …) checkpoint automatically, while continuous
+/// edits (canvas drags, inspector typing/slider drags) mutate fields
+/// directly and bracket themselves with
+/// [`Self::begin_gesture`]/[`Self::end_gesture`] so a whole drag or
+/// edit burst is one undo step. Selection is not snapshotted; it is
+/// only revalidated against the restored items. `next_id` never
+/// rewinds, so a box created after undoing an `add` never reuses
+/// the undone box's id.
 #[derive(Debug, Default)]
 pub struct OverlayState {
     pub items: Vec<OverlayText>,
     pub selected: Option<BoxId>,
     next_id: u64,
     pub dirty: bool,
+    history: History,
 }
 
 impl OverlayState {
+    /// Record the current `items` as one undo step. Discrete
+    /// mutators call this before changing anything; see
+    /// `history::History` for the snapshot/gesture mechanics.
+    pub fn checkpoint(&mut self) {
+        self.history.checkpoint(&self.items);
+    }
+
+    /// Start a continuous edit (drag, typing, slider) so it becomes
+    /// a single undo step when [`Self::end_gesture`] is called.
+    pub fn begin_gesture(&mut self) {
+        self.history.begin_gesture(&self.items);
+    }
+
+    /// Like [`Self::begin_gesture`], but with a snapshot taken before
+    /// the widget starting the edit already mutated `items`.
+    pub fn begin_gesture_with(&mut self, snapshot: Vec<OverlayText>) {
+        self.history.begin_gesture_with(snapshot);
+    }
+
+    /// Finish a continuous edit, recording it as one undo step if
+    /// it changed anything.
+    pub fn end_gesture(&mut self) {
+        self.history.end_gesture(&self.items);
+    }
+
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        self.history.can_undo()
+    }
+
+    #[must_use]
+    pub fn can_redo(&self) -> bool {
+        self.history.can_redo()
+    }
+
+    /// Restore the previous `items` snapshot. Returns `false` when
+    /// there is nothing to undo. Dirty is recomputed from the
+    /// restored items: undoing back to no boxes means nothing is
+    /// left to bake.
+    pub fn undo(&mut self) -> bool {
+        if !self.history.undo(&mut self.items) {
+            return false;
+        }
+        self.after_restore();
+        true
+    }
+
+    /// Inverse of [`Self::undo`]. Returns `false` when there is
+    /// nothing to redo.
+    pub fn redo(&mut self) -> bool {
+        if !self.history.redo(&mut self.items) {
+            return false;
+        }
+        self.after_restore();
+        true
+    }
+
+    /// Common post-restore fixups: a selection pointing at a box the
+    /// restored snapshot does not contain is dropped, and dirty
+    /// reflects whether anything remains to bake.
+    fn after_restore(&mut self) {
+        if self.selected.is_some_and(|sel| self.item(sel).is_none()) {
+            self.selected = None;
+        }
+        self.dirty = !self.items.is_empty();
+    }
+
     fn fresh_id(&mut self) -> BoxId {
         let id = BoxId(self.next_id);
         self.next_id += 1;
@@ -102,6 +184,7 @@ impl OverlayState {
 
     /// Insert a new empty box and select it. Returns its stable id.
     pub fn add(&mut self, page: usize, x_pt: f32, y_top_pt: f32, kind: BoxKind) -> BoxId {
+        self.checkpoint();
         let id = self.fresh_id();
         self.items
             .push(OverlayText::new(id, page, x_pt, y_top_pt, kind));
@@ -125,6 +208,7 @@ impl OverlayState {
         let Some(pos) = self.items.iter().position(|item| item.id == id) else {
             return;
         };
+        self.checkpoint();
         self.items.remove(pos);
         if self.selected == Some(id) {
             self.selected = None;
@@ -158,6 +242,7 @@ impl OverlayState {
     /// cascades instead of stacking copies in one spot. Returns
     /// the new box's fresh id.
     pub fn paste(&mut self, source: &mut OverlayText, page: usize) -> BoxId {
+        self.checkpoint();
         source.x_pt = (source.x_pt + PASTE_OFFSET_PT).max(0.0);
         source.y_top_pt = (source.y_top_pt + PASTE_OFFSET_PT).max(0.0);
         source.page = page;
@@ -191,6 +276,7 @@ impl OverlayState {
         if let Some(sel) = self.selected
             && self.item(sel).is_some_and(OverlayText::is_empty)
         {
+            self.checkpoint();
             self.items.retain(|item| item.id != sel);
             self.selected = None;
         }
@@ -201,6 +287,9 @@ impl OverlayState {
         self.items.clear();
         self.selected = None;
         self.dirty = false;
+        // Baked (or newly loaded) boxes must not be resurrected by
+        // undo: they are already in the PDF / no longer on screen.
+        self.history.clear();
     }
 }
 
