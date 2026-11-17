@@ -76,7 +76,7 @@ fn paste_assigns_fresh_id_selects_and_offsets() {
         item.width_pt = Some(150.0);
     }
     let mut clipboard = state.copy_selected().unwrap();
-    let pasted = state.paste(&mut clipboard, 2);
+    let pasted = state.paste(&mut clipboard, 2, (612.0, 792.0));
     assert_ne!(pasted, src);
     assert_eq!(state.selected, Some(pasted));
     assert!(state.dirty);
@@ -100,8 +100,8 @@ fn repeated_paste_cascades_instead_of_stacking() {
     let mut state = OverlayState::default();
     state.add(0, 100.0, 200.0, BoxKind::Text);
     let mut clipboard = state.copy_selected().unwrap();
-    let first = state.paste(&mut clipboard, 0);
-    let second = state.paste(&mut clipboard, 0);
+    let first = state.paste(&mut clipboard, 0, (612.0, 792.0));
+    let second = state.paste(&mut clipboard, 0, (612.0, 792.0));
     let a = state.item(first).unwrap();
     let (ax, ay) = (a.x_pt, a.y_top_pt);
     let b = state.item(second).unwrap();
@@ -111,13 +111,67 @@ fn repeated_paste_cascades_instead_of_stacking() {
 }
 
 #[test]
+fn paste_clamps_to_bottom_and_right_page_edges() {
+    let mut state = OverlayState::default();
+    // Near the bottom-right of a Letter page; size 12 gives a
+    // one-line height of LEADING * 12 = 14.4 pt.
+    let src = state.add(0, 500.0, 785.0, BoxKind::Text);
+    state.item_mut(src).unwrap().width_pt = Some(150.0);
+    let mut clipboard = state.copy_selected().unwrap();
+    let pasted = state.paste(&mut clipboard, 0, (612.0, 792.0));
+    let item = state.item(pasted).unwrap();
+    assert!((item.x_pt - 462.0).abs() < 1e-4, "got {}", item.x_pt);
+    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+}
+
+#[test]
+fn repeated_paste_stays_on_page_at_the_edge() {
+    let mut state = OverlayState::default();
+    let src = state.add(0, 100.0, 785.0, BoxKind::Text);
+    state.item_mut(src).unwrap().width_pt = Some(150.0);
+    let mut clipboard = state.copy_selected().unwrap();
+    let mut last = state.paste(&mut clipboard, 0, (612.0, 792.0));
+    for _ in 0..3 {
+        last = state.paste(&mut clipboard, 0, (612.0, 792.0));
+    }
+    let item = state.item(last).unwrap();
+    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+    assert!(item.y_top_pt + LEADING * item.size_pt <= 792.0);
+}
+
+#[test]
+fn paste_from_larger_page_onto_smaller_page_clamps_inside() {
+    let mut state = OverlayState::default();
+    // Copied from an A3-sized page (1191 x 842 pt landscape is
+    // beside the point: the position alone is off a Letter page).
+    let src = state.add(0, 1_000.0, 1_100.0, BoxKind::Text);
+    state.item_mut(src).unwrap().width_pt = Some(100.0);
+    let mut clipboard = state.copy_selected().unwrap();
+    let pasted = state.paste(&mut clipboard, 1, (612.0, 792.0));
+    let item = state.item(pasted).unwrap();
+    assert_eq!(item.page, 1);
+    assert!((item.x_pt - 512.0).abs() < 1e-4, "got {}", item.x_pt);
+    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+}
+
+#[test]
+fn duplicate_clamps_to_page_edge() {
+    let mut state = OverlayState::default();
+    let src = state.add(0, 100.0, 785.0, BoxKind::Text);
+    state.item_mut(src).unwrap().width_pt = Some(150.0);
+    let dup = state.duplicate_selected((612.0, 792.0)).unwrap();
+    let item = state.item(dup).unwrap();
+    assert!((item.y_top_pt - 777.6).abs() < 1e-4, "got {}", item.y_top_pt);
+}
+
+#[test]
 fn cut_removes_and_copy_without_selection_is_none() {
     let mut state = OverlayState::default();
     assert!(state.copy_selected().is_none());
-    assert!(state.duplicate_selected().is_none());
+    assert!(state.duplicate_selected((612.0, 792.0)).is_none());
     let id = state.add(1, 10.0, 20.0, BoxKind::Text);
     state.item_mut(id).unwrap().text = "hello".to_string();
-    let dup = state.duplicate_selected().unwrap();
+    let dup = state.duplicate_selected((612.0, 792.0)).unwrap();
     assert_eq!(state.items.len(), 2);
     assert_eq!(state.item(dup).unwrap().page, 1);
     state.selected = Some(id);

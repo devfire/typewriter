@@ -20,6 +20,24 @@ pub const LEADING: f32 = 1.2;
 /// cascade by this amount (see [`OverlayState::paste`]).
 pub const PASTE_OFFSET_PT: f32 = 12.0;
 
+/// Clamp a box's top-left corner so a box of `box_size_pt` stays
+/// inside a page of `page_size_pt` (PDF points, `y` measured from
+/// the top). The one clamping rule shared by canvas dragging and
+/// paste/duplicate: a box at least as large as the page pins to the
+/// page's top-left origin.
+#[must_use]
+pub fn clamp_to_page(
+    x_pt: f32,
+    y_top_pt: f32,
+    box_size_pt: (f32, f32),
+    page_size_pt: (f32, f32),
+) -> (f32, f32) {
+    (
+        x_pt.clamp(0.0, (page_size_pt.0 - box_size_pt.0).max(0.0)),
+        y_top_pt.clamp(0.0, (page_size_pt.1 - box_size_pt.1).max(0.0)),
+    )
+}
+
 /// What a box contains: ordinary typed text, or a typed signature
 /// rendered (preview and baked PDF) in the Momo Signature script font.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +102,22 @@ impl OverlayText {
 
     pub fn is_empty(&self) -> bool {
         self.text.trim().is_empty()
+    }
+
+    /// Extent used by [`clamp_to_page`] when this box is pasted.
+    /// The width is the fixed width when one is set (at the
+    /// preview's 24 pt minimum); an auto-fit width is measured only
+    /// by the canvas, so it contributes 0 and only the origin is
+    /// bounded. The height is one line per logical line (signatures
+    /// render as a single line), matching the drag clamp's height.
+    #[allow(clippy::cast_precision_loss)]
+    fn clamp_extent_pt(&self) -> (f32, f32) {
+        let width_pt = self.width_pt.map_or(0.0, |width| width.max(24.0));
+        let line_count = match self.kind {
+            BoxKind::Signature => 1,
+            BoxKind::Text => logical_lines(&self.text).len().max(1),
+        };
+        (width_pt, line_count as f32 * LEADING * self.size_pt)
     }
 }
 
@@ -237,14 +271,27 @@ impl OverlayState {
     /// Insert a copy of `source` on `page` (which may differ from
     /// `source.page`, for copy-on-one-page / paste-on-another),
     /// offset by [`PASTE_OFFSET_PT`] from `source`'s position,
-    /// and select it. `source` is advanced to the pasted position,
-    /// so pasting repeatedly from the same clipboard snapshot
-    /// cascades instead of stacking copies in one spot. Returns
-    /// the new box's fresh id.
-    pub fn paste(&mut self, source: &mut OverlayText, page: usize) -> BoxId {
+    /// clamped to the target page of `page_size_pt` (display size
+    /// in points) with [`clamp_to_page`], and select it. `source`
+    /// is advanced to the pasted position, so pasting repeatedly
+    /// from the same clipboard snapshot cascades instead of
+    /// stacking copies in one spot — until it reaches the page
+    /// edge, where it stays. Returns the new box's fresh id.
+    pub fn paste(
+        &mut self,
+        source: &mut OverlayText,
+        page: usize,
+        page_size_pt: (f32, f32),
+    ) -> BoxId {
         self.checkpoint();
-        source.x_pt = (source.x_pt + PASTE_OFFSET_PT).max(0.0);
-        source.y_top_pt = (source.y_top_pt + PASTE_OFFSET_PT).max(0.0);
+        let (x_pt, y_top_pt) = clamp_to_page(
+            source.x_pt + PASTE_OFFSET_PT,
+            source.y_top_pt + PASTE_OFFSET_PT,
+            source.clamp_extent_pt(),
+            page_size_pt,
+        );
+        source.x_pt = x_pt;
+        source.y_top_pt = y_top_pt;
         source.page = page;
         let id = self.fresh_id();
         let mut item = source.clone();
@@ -257,11 +304,13 @@ impl OverlayState {
 
     /// Duplicate the selected box in place (same page, offset by
     /// [`PASTE_OFFSET_PT`]), without touching the clipboard.
-    /// Returns the new box's id, or `None` when nothing is selected.
-    pub fn duplicate_selected(&mut self) -> Option<BoxId> {
+    /// `page_size_pt` is that page's display size in points, used
+    /// to keep the copy on the page. Returns the new box's id, or
+    /// `None` when nothing is selected.
+    pub fn duplicate_selected(&mut self, page_size_pt: (f32, f32)) -> Option<BoxId> {
         let mut source = self.copy_selected()?;
         let page = source.page;
-        Some(self.paste(&mut source, page))
+        Some(self.paste(&mut source, page, page_size_pt))
     }
 
     /// Boxes on `page`.

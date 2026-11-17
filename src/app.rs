@@ -387,10 +387,11 @@ impl TypewriterApp {
             return;
         }
         let page = self.page;
+        let page_size_pt = self.page_size_pt(page);
         let Some(source) = &mut self.clipboard else {
             return;
         };
-        let id = self.overlays.paste(source, page);
+        let id = self.overlays.paste(source, page, page_size_pt);
         if let Some(item) = self.overlays.item(id) {
             self.status = format!("Pasted {}", box_label(item.kind));
         }
@@ -422,9 +423,24 @@ impl TypewriterApp {
         }
     }
 
+    /// Display size of `page` in points. Falls back to US Letter
+    /// when no document (or page) is loaded, mirroring the canvas.
+    fn page_size_pt(&self, page: usize) -> (f32, f32) {
+        self.pdf_doc
+            .as_ref()
+            .and_then(|doc| doc.sizes_pt.get(page).copied())
+            .unwrap_or((612.0, 792.0))
+    }
+
     /// Duplicate the selected box in place, leaving the clipboard alone.
     pub(super) fn duplicate_selected(&mut self) {
-        if let Some(id) = self.overlays.duplicate_selected()
+        let page = self
+            .overlays
+            .selected
+            .and_then(|id| self.overlays.item(id))
+            .map_or(self.page, |item| item.page);
+        let page_size_pt = self.page_size_pt(page);
+        if let Some(id) = self.overlays.duplicate_selected(page_size_pt)
             && let Some(item) = self.overlays.item(id)
         {
             self.status = format!("Duplicated {}", box_label(item.kind));

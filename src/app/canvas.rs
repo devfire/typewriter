@@ -280,11 +280,15 @@ impl TypewriterApp {
             if resp.dragged() && self.resize_box != Some(idx) {
                 self.overlays.selected = Some(idx);
                 let delta = resp.drag_delta();
-                let max_left_pt = (page_rect.width() / zoom - width_pt).max(0.0);
-                let max_top_pt = (page_rect.height() / zoom - height_pt).max(0.0);
                 if let Some(current) = self.overlays.item_mut(idx) {
-                    current.x_pt = (current.x_pt + delta.x / zoom).clamp(0.0, max_left_pt);
-                    current.y_top_pt = (current.y_top_pt + delta.y / zoom).clamp(0.0, max_top_pt);
+                    let (x_pt, y_top_pt) = overlay::clamp_to_page(
+                        current.x_pt + delta.x / zoom,
+                        current.y_top_pt + delta.y / zoom,
+                        (width_pt, height_pt),
+                        (page_rect.width() / zoom, page_rect.height() / zoom),
+                    );
+                    current.x_pt = x_pt;
+                    current.y_top_pt = y_top_pt;
                 }
                 self.overlays.dirty = true;
             }
