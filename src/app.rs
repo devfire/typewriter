@@ -449,12 +449,30 @@ impl TypewriterApp {
 
     fn handle_shortcuts(&mut self, ctx: &egui::Context) {
         // While the unsaved-changes prompt is up it owns the keyboard (Esc dismisses it).
-        if matches!(self.close_state, CloseState::Prompting(_)) || ctx.wants_keyboard_input() {
+        if matches!(self.close_state, CloseState::Prompting(_)) {
+            return;
+        }
+        // Open/Save are COMMAND-modified and have no text-editing
+        // meaning, so consume them before the focus guard below:
+        // Ctrl+S must save even while typing in the inspector. Zoom
+        // stays behind the guard: its keys are unmodified +/-, which
+        // a focused editor must receive as text.
+        let (open, save) = ctx.input_mut(|i| {
+            (
+                i.consume_shortcut(&SHORTCUT_OPEN),
+                i.consume_shortcut(&SHORTCUT_SAVE),
+            )
+        });
+        if open {
+            self.open_dialog();
+        }
+        if save && self.overlays.dirty {
+            self.save(SaveMode::InPlace);
+        }
+        if ctx.wants_keyboard_input() {
             return;
         }
         let (
-            open,
-            save,
             copy,
             cut,
             paste,
@@ -489,8 +507,6 @@ impl TypewriterApp {
                 _ => true,
             });
             (
-                i.consume_shortcut(&SHORTCUT_OPEN),
-                i.consume_shortcut(&SHORTCUT_SAVE),
                 i.consume_shortcut(&SHORTCUT_COPY) || copy_event,
                 i.consume_shortcut(&SHORTCUT_CUT) || cut_event,
                 i.consume_shortcut(&SHORTCUT_PASTE) || paste_event,
@@ -507,12 +523,6 @@ impl TypewriterApp {
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace),
             )
         });
-        if open {
-            self.open_dialog();
-        }
-        if save && self.overlays.dirty {
-            self.save(SaveMode::InPlace);
-        }
         // Box clipboard. While a text editor has keyboard focus
         // `handle_shortcuts` returns early above, so Ctrl+C/X/V
         // there keep their native text-editing meaning.

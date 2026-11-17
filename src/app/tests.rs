@@ -588,6 +588,78 @@ fn copy_cut_paste_events_copy_cut_and_paste_box() {
     assert!(app.clipboard.is_some());
 }
 
+#[test]
+fn ctrl_s_saves_while_text_edit_has_focus_but_ctrl_c_stays_with_editor() {
+    use eframe::egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, Vec2};
+
+    let mut app = test_app();
+    let path = write_pdf(1);
+    assert!(app.load(path.path().to_path_buf()));
+    // As recorded by a first confirmed overwrite (see
+    // `confirmed_in_place_save_writes_repeatedly_without_asking_again`),
+    // so Ctrl+S writes without showing the overwrite dialog.
+    app.overwrite_confirmed_for = Some(path.path().to_path_buf());
+    let id = app.overlays.add(0, 50.0, 60.0, BoxKind::Text);
+    app.overlays.item_mut(id).unwrap().text = "Ada".to_string();
+    assert!(app.overlays.dirty);
+
+    let ctx = Context::default();
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0));
+    let mut editor_text = "Ada".to_string();
+    // Focus a text editor, as the inspector does while typing.
+    let _output = ctx.run(
+        RawInput {
+            screen_rect: Some(screen),
+            ..RawInput::default()
+        },
+        |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.add(egui::TextEdit::singleline(&mut editor_text))
+                    .request_focus();
+            });
+        },
+    );
+
+    let key = |key: Key| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::COMMAND,
+    };
+    // Mirror `update`: shortcuts run before the panels, and the
+    // editor is redrawn every frame so its focus persists into the
+    // next frame's `handle_shortcuts` call.
+    let mut run_shortcuts = |app: &mut TypewriterApp, events: Vec<Event>| {
+        let _output = ctx.run(
+            RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..RawInput::default()
+            },
+            |ctx| {
+                app.handle_shortcuts(ctx);
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut editor_text));
+                });
+            },
+        );
+    };
+
+    run_shortcuts(&mut app, vec![key(Key::C)]);
+    assert!(
+        app.clipboard.is_none(),
+        "Ctrl+C in a text editor must not copy the box"
+    );
+    assert!(app.overlays.dirty);
+
+    run_shortcuts(&mut app, vec![key(Key::S)]);
+    assert!(
+        !app.overlays.dirty,
+        "Ctrl+S in a text editor must save the document"
+    );
+}
+
 fn run_canvas(
     ctx: &egui::Context,
     app: &mut TypewriterApp,
