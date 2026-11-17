@@ -52,18 +52,24 @@ pub(super) fn width_1000(advance: u16, units_per_em: u16) -> i64 {
 }
 
 /// Glyphs used by `boxes`, keyed by glyph id in the *original* face:
-/// glyph id -> (source char, advance width in 1000-unit em space,
-/// scaled from the face's actual units-per-em).
+/// glyph id -> (char for `ToUnicode`, advance width in 1000-unit em
+/// space, scaled from the face's actual units-per-em). The char is
+/// the source char only when the face actually maps it; unmappable
+/// chars render as the `?` fallback glyph, so that glyph records
+/// `?` — never whichever unmappable char reached it first.
 fn used_glyphs(face: &Face<'_>, boxes: &[&OverlayText]) -> BTreeMap<u16, (char, i64)> {
     let units_per_em = face.units_per_em();
     let mut used = BTreeMap::new();
     for item in boxes {
         for c in item.signature_line().chars() {
-            let gid = glyph_id(face, c);
+            let (gid, extracted) = match face.glyph_index(c) {
+                Some(gid) => (gid.0, c),
+                None => (glyph_id(face, c), '?'),
+            };
             let width = face
                 .glyph_hor_advance(ttf_parser::GlyphId(gid))
                 .map_or(500, |advance| width_1000(advance, units_per_em));
-            used.entry(gid).or_insert((c, width));
+            used.entry(gid).or_insert((extracted, width));
         }
     }
     used

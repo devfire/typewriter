@@ -29,6 +29,28 @@ fn signature_bake_embeds_momo_and_is_extractable() {
 }
 
 #[test]
+fn signature_fallback_glyph_extracts_as_question_mark_regardless_of_order() {
+    // Momo has no Cyrillic zhe: it renders as the `?` glyph, so it must
+    // also extract as `?` — whether the unmappable char or a real `?`
+    // reaches the shared fallback glyph first.
+    let face = signature_font::face().unwrap();
+    assert!(face.glyph_index('\u{436}').is_none(), "test premise: zhe must be unmappable");
+    assert!(face.glyph_index('?').is_some(), "test premise: `?` must be mappable");
+    for input in ["\u{436}A?", "?A\u{436}"] {
+        let (mut pdf, out) = fixture_pdf();
+        let mut overlays = OverlayState::default();
+        let idx = overlays.add(0, 72.0, 700.0, BoxKind::Signature);
+        overlays.item_mut(idx).unwrap().text = input.to_string();
+        pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+        let extracted = pdf.doc.extract_text(&[1]).unwrap();
+        assert!(
+            extracted.contains("?A?"),
+            "input {input:?} must extract as `?A?`: {extracted:?}"
+        );
+    }
+}
+
+#[test]
 fn multi_page_signature_bake_embeds_font_program_once() {
     // Two pages signed in one bake share a single embedded font: the
     // font program stream (`Length1` = the TrueType file) and its
