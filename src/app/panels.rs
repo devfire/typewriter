@@ -549,16 +549,28 @@ impl TypewriterApp {
                         .strong(),
                 );
                 ui.add_space(4.0);
+                // Box-scoped editor ID: egui persists `TextEditState`
+                // (including its native undo history) under the widget
+                // ID. Without a per-box salt, switching the selection
+                // reuses the same auto-ID at this position, so Ctrl+Z
+                // in box B can restore box A's text. `BoxId` is
+                // session-unique and never reused, so it isolates both
+                // the text and signature editors across boxes and
+                // documents; app-level whole-box undo stays in
+                // `OverlayState` history and is unaffected.
                 let (editor, edit_h) = if is_signature {
                     (
-                        egui::TextEdit::singleline(&mut item.text).hint_text("Type your name…"),
+                        egui::TextEdit::singleline(&mut item.text)
+                            .hint_text("Type your name…")
+                            .id_salt(("box-text", sel)),
                         44.0,
                     )
                 } else {
                     (
                         egui::TextEdit::multiline(&mut item.text)
                             .hint_text("Type here… (? replaces non-WinAnsi glyphs)")
-                            .desired_rows(5),
+                            .desired_rows(5)
+                            .id_salt(("box-text", sel)),
                         110.0,
                     )
                 };

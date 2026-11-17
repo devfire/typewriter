@@ -635,6 +635,98 @@ fn typing_burst_with_key_release_frames_is_one_undo_step() {
 }
 
 #[test]
+fn inspector_native_undo_is_per_box_for_both_editors() {
+    use eframe::egui::{Context, Event, Key, Modifiers, Pos2, RawInput, Rect, Vec2};
+
+    for kind in [BoxKind::Text, BoxKind::Signature] {
+        let mut app = test_app();
+        let id_a = app.overlays.add(0, 10.0, 20.0, kind);
+        app.overlays.item_mut(id_a).unwrap().text = "Box A text".to_string();
+        let id_b = app.overlays.add(0, 10.0, 20.0, kind);
+        app.overlays.item_mut(id_b).unwrap().text = "Box B text".to_string();
+        // Typing makes the boxes non-empty so selecting between them
+        // never drops one as an empty placeholder.
+        app.overlays.end_gesture();
+
+        let ctx = Context::default();
+        super::theme::apply_theme(&ctx);
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0));
+        let run = |app: &mut TypewriterApp, events: Vec<Event>| {
+            let _output = ctx.run(
+                RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..RawInput::default()
+                },
+                |ctx| app.sidebar(ctx),
+            );
+        };
+        let undo_key = || Event::Key {
+            key: Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::COMMAND,
+        };
+
+        // Focus A's editor (as placement does) and type once, giving
+        // A's native undo history one entry.
+        app.overlays.select(Some(id_a));
+        app.focus_editor = true;
+        run(&mut app, Vec::new());
+        run(&mut app, Vec::new());
+        run(&mut app, vec![Event::Text("X".to_owned())]);
+        let edited_a = app.overlays.item(id_a).unwrap().text.clone();
+        assert_ne!(
+            edited_a, "Box A text",
+            "typing in {kind:?} editor A must change its text"
+        );
+
+        // Switch to B. Its editor must start with B's text, not A's.
+        app.overlays.select(Some(id_b));
+        app.focus_editor = true;
+        run(&mut app, Vec::new());
+        run(&mut app, Vec::new());
+        assert_eq!(
+            app.overlays.item(id_b).unwrap().text,
+            "Box B text",
+            "selecting {kind:?} editor B must not pull in A's text"
+        );
+        // Native undo in B must not restore A's text: histories are
+        // per-box. With a shared widget ID this becomes "Box A text".
+        run(&mut app, vec![undo_key()]);
+        assert_eq!(
+            app.overlays.item(id_b).unwrap().text,
+            "Box B text",
+            "native undo in {kind:?} editor B must not insert A's text"
+        );
+        assert_eq!(
+            app.overlays.item(id_a).unwrap().text,
+            edited_a,
+            "native undo in B must leave {kind:?} editor A alone"
+        );
+
+        // Returning to A keeps A's own native history: undo reverts
+        // the typed "X" and restores A's original text.
+        app.overlays.select(Some(id_a));
+        app.focus_editor = true;
+        run(&mut app, Vec::new());
+        run(&mut app, Vec::new());
+        run(&mut app, vec![undo_key()]);
+        assert_eq!(
+            app.overlays.item(id_a).unwrap().text,
+            "Box A text",
+            "returning to {kind:?} editor A must keep its own undo history"
+        );
+        assert_eq!(
+            app.overlays.item(id_b).unwrap().text,
+            "Box B text",
+            "undo in A must leave {kind:?} editor B alone"
+        );
+    }
+}
+
+#[test]
 fn inspector_stays_on_screen_with_many_boxes() {
     use eframe::egui::{Context, Pos2, RawInput, Rect, Shape, Vec2};
 
