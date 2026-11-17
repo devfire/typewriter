@@ -321,6 +321,7 @@ fn fixture_pdf_rotated(rotate: i64) -> (PdfDoc, TempFile) {
         sizes_pt: vec![size],
         boxes_pt: vec![(0.0, 0.0, 612.0, 792.0)],
         rotations: vec![rotate],
+        dirty: std::collections::BTreeSet::new(),
     };
     (pdf, out)
 }
@@ -548,13 +549,23 @@ fn existing_ftw_alias_is_not_overwritten() {
         dictionary! { "Font" => dictionary! { "F_TW" => Object::Reference(times_id) } },
     );
     assert_eq!(
-        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        PdfDoc::ensure_helvetica(
+            &mut pdf.doc,
+            page_id,
+            &mut std::collections::BTreeSet::new()
+        )
+        .unwrap(),
         b"F_TW1".to_vec()
     );
     let fonts = pdf.doc.get_page_fonts(page_id).unwrap();
     assert!(fonts.contains_key(b"F_TW1".as_slice()));
     assert_eq!(
-        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        PdfDoc::ensure_helvetica(
+            &mut pdf.doc,
+            page_id,
+            &mut std::collections::BTreeSet::new()
+        )
+        .unwrap(),
         b"F_TW1".to_vec()
     );
 }
@@ -602,11 +613,21 @@ fn non_standard_helvetica_on_page_is_not_reused() {
         .set("Resources", dictionary! { "Font" => font });
 
     assert_eq!(
-        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        PdfDoc::ensure_helvetica(
+            &mut pdf.doc,
+            page_id,
+            &mut std::collections::BTreeSet::new()
+        )
+        .unwrap(),
         b"F_TW".to_vec()
     );
     assert_eq!(
-        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        PdfDoc::ensure_helvetica(
+            &mut pdf.doc,
+            page_id,
+            &mut std::collections::BTreeSet::new()
+        )
+        .unwrap(),
         b"F_TW".to_vec()
     );
 }
@@ -650,7 +671,12 @@ fn helvetica_from_shadowed_inherited_resources_is_not_reused() {
         .unwrap()
         .set("Resources", Object::Reference(page_resources_id));
 
-    let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
+    let alias = PdfDoc::ensure_helvetica(
+        &mut pdf.doc,
+        page_id,
+        &mut std::collections::BTreeSet::new(),
+    )
+    .unwrap();
     assert_eq!(alias, b"F_TW".to_vec());
     let fonts = effective_fonts(&pdf.doc, page_id);
     let inserted = fonts
@@ -663,7 +689,12 @@ fn helvetica_from_shadowed_inherited_resources_is_not_reused() {
     assert!(!fonts.contains_key(b"FH".as_slice()));
     // Second call reuses the now-visible inserted Helvetica.
     assert_eq!(
-        PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+        PdfDoc::ensure_helvetica(
+            &mut pdf.doc,
+            page_id,
+            &mut std::collections::BTreeSet::new()
+        )
+        .unwrap(),
         alias
     );
 }
@@ -729,7 +760,12 @@ fn non_utf8_helvetica_alias_is_reused_verbatim() {
             .set("Resources", dictionary! { "Font" => font });
         // The baker must reuse the exact alias, whatever its bytes.
         assert_eq!(
-            PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+            PdfDoc::ensure_helvetica(
+                &mut pdf.doc,
+                page_id,
+                &mut std::collections::BTreeSet::new()
+            )
+            .unwrap(),
             alias
         );
         let mut overlays = OverlayState::default();

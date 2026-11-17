@@ -3,7 +3,7 @@
 
 use anyhow::Result;
 use lopdf::{Dictionary, Document, Object, ObjectId};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub(super) fn resolve<'a>(doc: &'a Document, obj: &'a Object) -> Option<&'a Object> {
     match obj {
@@ -185,6 +185,7 @@ pub(super) fn insert_font_entry(
     page_id: ObjectId,
     alias: &[u8],
     font_id: ObjectId,
+    touched: &mut BTreeSet<ObjectId>,
 ) -> Result<()> {
     let Some(target) = find_resources_target(doc, page_id) else {
         let resources = doc.get_or_create_resources(page_id)?;
@@ -192,6 +193,7 @@ pub(super) fn insert_font_entry(
         let mut font = Dictionary::new();
         font.set(alias.to_vec(), Object::Reference(font_id));
         resources.set("Font", font);
+        touched.insert(page_id);
         return Ok(());
     };
     // Font sub-dictionary may itself be a reference; resolve first so
@@ -206,7 +208,16 @@ pub(super) fn insert_font_entry(
     if let Some(font_dict_id) = font_ref {
         doc.get_dictionary_mut(font_dict_id)?
             .set(alias.to_vec(), Object::Reference(font_id));
+        touched.insert(font_dict_id);
         return Ok(());
+    }
+    match target {
+        ResourcesTarget::Reference(id) => {
+            touched.insert(id);
+        }
+        ResourcesTarget::Direct(node_id) => {
+            touched.insert(node_id);
+        }
     }
     let resources = resources_dict_mut(doc, target)?;
     if let Ok(font_obj) = resources.get_mut(b"Font") {

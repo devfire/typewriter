@@ -162,6 +162,7 @@ fn multi_page_signature_bake_embeds_font_program_once() {
         sizes_pt: vec![(612.0, 792.0); 2],
         boxes_pt: vec![(0.0, 0.0, 612.0, 792.0); 2],
         rotations: vec![0; 2],
+        dirty: std::collections::BTreeSet::new(),
     };
     let mut overlays = OverlayState::default();
     // Distinct glyphs per page: the shared font's widths/`ToUnicode`

@@ -190,6 +190,7 @@ pub(super) fn store(
     doc: &mut Document,
     boxes: &[OverlayText],
     baked: &[BakedStream],
+    touched: &mut BTreeSet<ObjectId>,
 ) -> Result<()> {
     // Reject a payload the next open would ignore, before writing
     // anything or (via the caller) draining overlays: a successful
@@ -197,6 +198,14 @@ pub(super) fn store(
     validate_boxes(boxes, doc.get_pages().len())?;
     if boxes.is_empty() {
         if baked.is_empty() {
+            if let Some(catalog_id) = doc
+                .trailer
+                .get(b"Root")
+                .ok()
+                .and_then(|obj| obj.as_reference().ok())
+            {
+                touched.insert(catalog_id);
+            }
             if let Ok(catalog) = doc.catalog_mut() {
                 catalog.remove(CATALOG_KEY);
             }
@@ -265,6 +274,14 @@ pub(super) fn store(
     payload.set("Version", Object::Integer(VERSION));
     payload.set("Boxes", Object::Array(dicts));
     payload.set("Streams", Object::Array(stream_dicts));
+    if let Some(catalog_id) = doc
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|obj| obj.as_reference().ok())
+    {
+        touched.insert(catalog_id);
+    }
     doc.catalog_mut()
         .context("failed to read PDF catalog for embedded boxes")?
         .set("Typewriter", Object::Dictionary(payload));

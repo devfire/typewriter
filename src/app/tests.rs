@@ -228,7 +228,7 @@ fn write_pdf(pages: usize) -> TempFile {
 }
 
 #[test]
-fn reload_after_save_preserves_page_and_zoom() {
+fn refresh_after_save_preserves_page_and_zoom() {
     let path = write_pdf(3);
     let mut app = test_app();
     let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
@@ -239,7 +239,7 @@ fn reload_after_save_preserves_page_and_zoom() {
     assert!(!app.focus_editor);
     app.page = 2;
     app.zoom = 1.7;
-    app.reload_after_save(path.path());
+    app.refresh_after_save(path.path());
     assert_eq!(app.page, 2);
     assert!((app.zoom - 1.7).abs() < f32::EPSILON);
     assert!(
@@ -270,36 +270,42 @@ fn changing_page_clears_selection_and_drops_empty_box() {
 }
 
 #[test]
-fn reload_after_save_clamps_page_to_new_page_count() {
-    let path = write_pdf(3);
-    let shorter = write_pdf(1);
+fn refresh_after_save_restores_baked_boxes_and_keeps_place() {
+    // The old disk reload re-read the file after every save; the
+    // in-memory refresh must produce the same observable state:
+    // boxes back as live overlays, preview rebuilt, place kept,
+    // and the target recorded as the open path (Save As).
+    let path = write_pdf(2);
+    let out = TempFile::new("app-refresh");
     let mut app = test_app();
     assert!(app.load(path.path().to_path_buf()));
-    app.page = 2;
-    app.reload_after_save(shorter.path());
-    assert_eq!(app.page, 0);
-}
-
-#[test]
-fn failed_reload_after_save_is_surfaced_not_masked_by_saved() {
-    let path = write_pdf(3);
-    let mut app = test_app();
-    assert!(app.load(path.path().to_path_buf()));
+    let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.overlays.item_mut(id).unwrap().text = "hello".to_string();
     app.page = 1;
     app.zoom = 1.7;
-    let missing = path
-        .path()
-        .with_file_name("typewriter-app-test-no-such-file.pdf");
-    app.reload_after_save(&missing);
-    assert!(
-        app.status.contains("reload failed"),
-        "reload failure masked by status: {}",
-        app.status
-    );
-    // The still-loaded document keeps the user's place.
+    let target = out.path().to_path_buf();
+    app.pdf_doc
+        .as_mut()
+        .unwrap()
+        .bake_and_save(&mut app.overlays, &target)
+        .unwrap();
+    assert!(app.overlays.items.is_empty(), "bake drains overlays");
+    app.refresh_after_save(&target);
     assert_eq!(app.page, 1);
     assert!((app.zoom - 1.7).abs() < f32::EPSILON);
-    assert_eq!(app.page_count(), 3);
+    assert_eq!(app.overlays.items.len(), 1);
+    assert_eq!(app.overlays.items[0].text, "hello");
+    assert!(
+        !app.overlays.is_dirty(),
+        "restored boxes are the clean state"
+    );
+    assert!(
+        app.status.starts_with("Saved "),
+        "unexpected status: {}",
+        app.status
+    );
+    assert_eq!(app.pdf_path.as_deref(), Some(target.as_path()));
+    assert!(app.hayro_pdf.is_some(), "preview rebuilt from memory");
 }
 
 #[test]

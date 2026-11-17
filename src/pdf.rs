@@ -18,7 +18,7 @@ use lopdf::{Dictionary, Document, Object, ObjectId, Stream, StringFormat, dictio
 use page_tree::{
     effective_font_dict, effective_fonts, inherited_int, insert_font_entry, page_box, resolve,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -52,6 +52,15 @@ pub struct PdfDoc {
     boxes_pt: Vec<(f32, f32, f32, f32)>,
     /// Clockwise `/Rotate` per page, normalized to `0..360`.
     rotations: Vec<i64>,
+    /// Pre-existing objects changed in memory since `bytes` was
+    /// written (e.g. page dictionaries stripped by
+    /// `take_embedded_boxes`). The next incremental save copies
+    /// these into its update alongside the bake's own touched
+    /// objects, so the diff needs no re-parse of the backing
+    /// bytes to discover them. Cleared whenever `doc` is brought
+    /// back in line with `bytes` (after a save, or when a failed
+    /// save restores `doc` from `bytes`).
+    dirty: BTreeSet<ObjectId>,
 }
 
 impl PdfDoc {
@@ -108,6 +117,7 @@ impl PdfDoc {
             sizes_pt,
             boxes_pt,
             rotations,
+            dirty: BTreeSet::new(),
         })
     }
 
@@ -135,6 +145,10 @@ impl PdfDoc {
             return Vec::new();
         }
         let changed_pages = embedded::strip_verified(&mut self.doc, &self.page_ids, &embedded);
+        // The stripped pages now differ from the backing bytes; the
+        // next incremental save must carry them even when it bakes
+        // nothing itself (see `dirty`).
+        self.dirty.extend(changed_pages.iter().copied());
         if let Some(rendered) = self.render_bytes_with_page_updates(&changed_pages) {
             self.render_bytes = Arc::new(rendered);
         }
@@ -215,7 +229,9 @@ impl PdfDoc {
         embedded::validate_boxes(&baked_boxes, self.page_ids.len())?;
         let saved = if self.bytes.is_empty() {
             let mut staged = self.doc.clone();
-            let baked_streams = Self::bake_pages(
+            // A full write serializes the whole staged document, so
+            // the incremental update's touched set is not needed.
+            let (baked_streams, mut dropped) = Self::bake_pages(
                 &mut staged,
                 &self.page_ids,
                 &self.boxes_pt,
@@ -224,13 +240,17 @@ impl PdfDoc {
                 sig_font.as_ref(),
                 sig_face.as_ref(),
             )?;
-            embedded::store(&mut staged, &baked_boxes, &baked_streams)?;
+            embedded::store(&mut staged, &baked_boxes, &baked_streams, &mut dropped)?;
             let mut saved = Vec::new();
             staged
                 .save_to(&mut saved)
                 .with_context(|| format!("failed to save {}", out.display()))?;
+            let xref_start =
+                save::parse_startxref(&saved).context("failed to locate xref in saved PDF")?;
             Self::atomic_write(&saved, out)?;
             self.doc = staged;
+            self.doc.xref_start = xref_start;
+            self.dirty.clear();
             saved
         } else {
             match self.bake_and_save_incremental(
@@ -247,15 +267,25 @@ impl PdfDoc {
                     // error is the one the caller needs.
                     if let Ok(restored) = Document::load_mem(&self.bytes) {
                         self.doc = restored;
+                        // The restored document matches the backing
+                        // bytes again, so pre-bake in-memory changes
+                        // recorded in `dirty` are gone with it.
+                        self.dirty.clear();
                     }
                     return Err(err);
                 }
             }
         };
         self.bytes = Arc::new(saved);
+        // Re-read the just-stored payload so the post-save refresh
+        // (`refresh_after_save`, like `load`) can claim it without
+        // touching the disk; without this the in-memory document
+        // would bake but never restore.
+        self.embedded = embedded::extract(&self.doc, self.page_ids.len());
         // The just-saved bytes render correctly as-is (the boxes
         // are baked in and the overlays are drained below); the app
-        // reloads right after saving anyway.
+        // refreshes the preview from this in-memory state without
+        // re-reading the file.
         self.render_bytes = Arc::clone(&self.bytes);
         overlays.clear_baked();
         Ok(())
@@ -273,7 +303,11 @@ impl PdfDoc {
     /// no `/Widths`, and no embedded `/FontFile*` in its descriptor;
     /// otherwise `WinAnsi` bytes or standard AFM widths would disagree
     /// with the page font.
-    fn ensure_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<Vec<u8>> {
+    fn ensure_helvetica(
+        doc: &mut Document,
+        page_id: ObjectId,
+        touched: &mut std::collections::BTreeSet<ObjectId>,
+    ) -> Result<Vec<u8>> {
         let fonts = effective_fonts(doc, page_id);
         for (name, font) in &fonts {
             if is_standard_winansi_helvetica(doc, font) {
@@ -287,7 +321,7 @@ impl PdfDoc {
             "BaseFont" => "Helvetica",
             "Encoding" => "WinAnsiEncoding",
         });
-        insert_font_entry(doc, page_id, &alias, font_id)?;
+        insert_font_entry(doc, page_id, &alias, font_id, touched)?;
         Ok(alias)
     }
 
@@ -299,13 +333,14 @@ impl PdfDoc {
         doc: &mut Document,
         page_id: ObjectId,
         type0_id: ObjectId,
+        touched: &mut std::collections::BTreeSet<ObjectId>,
     ) -> Result<Vec<u8>> {
         if let Some(alias) = signature_font::signature_alias(doc, page_id, type0_id) {
             return Ok(alias);
         }
         let fonts = effective_fonts(doc, page_id);
         let alias = free_alias(&fonts, "F_SIG");
-        insert_font_entry(doc, page_id, &alias, type0_id)?;
+        insert_font_entry(doc, page_id, &alias, type0_id, touched)?;
         Ok(alias)
     }
 }
@@ -435,6 +470,7 @@ fn append_overlay_stream(
     doc: &mut Document,
     page_id: ObjectId,
     operations: Vec<Operation>,
+    touched: &mut std::collections::BTreeSet<ObjectId>,
 ) -> Result<ObjectId> {
     let existing = doc.get_page_contents(page_id);
     // Every baked stream carries the marker the embedded payload's
@@ -445,6 +481,7 @@ fn append_overlay_stream(
         let overlay_id = doc.add_object(Stream::new(Dictionary::new(), marked_bytes));
         doc.get_dictionary_mut(page_id)?
             .set("Contents", Object::Reference(overlay_id));
+        touched.insert(page_id);
         return Ok(overlay_id);
     }
     let overlay_bytes = marked_bytes;
@@ -464,6 +501,7 @@ fn append_overlay_stream(
     contents.push(Object::Reference(overlay_id));
     doc.get_dictionary_mut(page_id)?
         .set("Contents", Object::Array(contents));
+    touched.insert(page_id);
     Ok(overlay_id)
 }
 

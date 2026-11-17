@@ -10,7 +10,7 @@
 use super::{PdfDoc, append_overlay_stream, box_operations, signature_font};
 use crate::overlay::{BoxKind, OverlayText};
 use anyhow::{Context, Result};
-use lopdf::{Document, IncrementalDocument, Object, ObjectId};
+use lopdf::{Document, IncrementalDocument, ObjectId};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -27,10 +27,14 @@ impl PdfDoc {
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
         sig_font: Option<&signature_font::SignatureFont>,
         sig_face: Option<&ttf_parser::Face<'_>>,
-    ) -> Result<Vec<super::embedded::BakedStream>> {
+    ) -> Result<(
+        Vec<super::embedded::BakedStream>,
+        std::collections::BTreeSet<ObjectId>,
+    )> {
         let shared_sig_font = sig_font
             .zip(sig_face)
             .map(|(font, face)| font.embed(doc, face));
+        let mut touched = std::collections::BTreeSet::new();
         let mut baked = Vec::with_capacity(by_page.len());
         for (page, boxes) in by_page {
             let page_id = page_ids[*page];
@@ -39,11 +43,16 @@ impl PdfDoc {
             let needs_text = boxes.iter().any(|item| item.kind == BoxKind::Text);
             let needs_sig = boxes.iter().any(|item| item.kind == BoxKind::Signature);
             let text_alias = needs_text
-                .then(|| Self::ensure_helvetica(doc, page_id))
+                .then(|| Self::ensure_helvetica(doc, page_id, &mut touched))
                 .transpose()?;
             let sig_alias =
                 if needs_sig && let (Some(_), Some(type0_id)) = (sig_font, shared_sig_font) {
-                    Some(Self::ensure_signature(doc, page_id, type0_id)?)
+                    Some(Self::ensure_signature(
+                        doc,
+                        page_id,
+                        type0_id,
+                        &mut touched,
+                    )?)
                 } else {
                     None
                 };
@@ -68,11 +77,11 @@ impl PdfDoc {
                     }
                 }
             }
-            let id = append_overlay_stream(doc, page_id, operations)
+            let id = append_overlay_stream(doc, page_id, operations, &mut touched)
                 .context("failed to append overlay content stream")?;
             baked.push(super::embedded::BakedStream { page: *page, id });
         }
-        Ok(baked)
+        Ok((baked, touched))
     }
 
     /// Bake into `self.doc` and serialize only the resulting update:
@@ -87,7 +96,8 @@ impl PdfDoc {
         sig_face: Option<&ttf_parser::Face<'_>>,
         out: &Path,
     ) -> Result<Vec<u8>> {
-        let baked_streams = Self::bake_pages(
+        let max_id_before = self.doc.max_id;
+        let (baked_streams, mut touched) = Self::bake_pages(
             &mut self.doc,
             &self.page_ids,
             &self.boxes_pt,
@@ -98,44 +108,54 @@ impl PdfDoc {
         )?;
         // Embed the just-baked boxes and their streams' ids and
         // hashes so the saved file reopens editable; part of the
-        // same diff, so payload and baked streams always land in
+        // same update, so payload and baked streams always land in
         // the same incremental revision.
-        super::embedded::store(&mut self.doc, baked_boxes, &baked_streams)?;
-        // The previous revision, re-parsed from the untouched bytes:
-        // the diff against it is exactly this update's object set.
-        // Changed pre-existing objects are always dictionaries (page,
-        // resources, font dicts); content streams are only ever added
-        // under fresh ids, never mutated, so an unchanged stream id
-        // needs no deep comparison of its bytes.
-        let mut update = IncrementalDocument::create_from(
-            (*self.bytes).clone(),
-            Document::load_mem(&self.bytes).context("failed to re-parse PDF")?,
-        );
-        let changed: Vec<(ObjectId, Object)> = self
-            .doc
-            .objects
-            .iter()
-            .filter(|(id, obj)| {
-                update
-                    .get_prev_documents()
-                    .objects
-                    .get(id)
-                    .is_none_or(|prev| {
-                        !matches!((prev, *obj), (Object::Stream(_), Object::Stream(_)))
-                            && prev != *obj
-                    })
-            })
-            .map(|(id, obj)| (*id, obj.clone()))
-            .collect();
-        for (id, obj) in changed {
-            update.new_document.set_object(id, obj);
+        super::embedded::store(&mut self.doc, baked_boxes, &baked_streams, &mut touched)?;
+        // The update is exactly the bake's new objects plus the
+        // pre-existing dictionaries changed since the backing bytes
+        // were written: the bake's own mutations (page `Contents`,
+        // resources/font dicts, catalog), recorded in `touched` at
+        // each mutation site, and earlier in-memory changes (pages
+        // stripped by `take_embedded_boxes`), carried in `dirty`.
+        // Fresh `add_object` ids always exceed the pre-bake
+        // `max_id`, so they need no recording; content streams are
+        // only ever added under fresh ids, never mutated. No
+        // re-parse of the backing bytes and no whole-document deep
+        // comparison.
+        // `IncrementalDocument`'s writer emits the previous bytes
+        // verbatim and reads only trailer, xref position/type, and
+        // max id from the previous document (see
+        // `render_bytes_with_page_updates`), so a metadata-only
+        // stand-in suffices — no second parse of the backing bytes
+        // and no object graph cloned. `xref_start` is tracked on
+        // the document after every save (see `parse_startxref`): a
+        // stale offset would chain `/Prev` to the wrong revision
+        // and the file would no longer parse.
+        let mut prev = Document::new();
+        prev.version.clone_from(&self.doc.version);
+        prev.binary_mark.clone_from(&self.doc.binary_mark);
+        prev.trailer.clone_from(&self.doc.trailer);
+        prev.reference_table =
+            lopdf::xref::Xref::new(0, self.doc.reference_table.cross_reference_type);
+        prev.max_id = self.doc.max_id;
+        prev.max_bookmark_id = self.doc.max_bookmark_id;
+        prev.xref_start = self.doc.xref_start;
+        touched.extend(self.dirty.iter().copied());
+        let mut update = IncrementalDocument::create_from((*self.bytes).clone(), prev);
+        for (id, obj) in &self.doc.objects {
+            if id.0 > max_id_before || touched.contains(id) {
+                update.new_document.set_object(*id, obj.clone());
+            }
         }
         update.new_document.max_id = update.new_document.max_id.max(self.doc.max_id);
         let mut saved = Vec::with_capacity(self.bytes.len());
         update
             .save_to(&mut saved)
             .with_context(|| format!("failed to save {}", out.display()))?;
+        let xref_start = parse_startxref(&saved).context("failed to locate xref in saved PDF")?;
         Self::atomic_write(&saved, out)?;
+        self.doc.xref_start = xref_start;
+        self.dirty.clear();
         Ok(saved)
     }
 
@@ -226,4 +246,36 @@ impl PdfDoc {
         }
         Ok(())
     }
+}
+
+/// Offset of the latest xref section in freshly written `saved`:
+/// the integer after the final `startxref`, which both the full
+/// and incremental writers emit as `"\nstartxref\n{offset}\n%%EOF"`.
+/// Tracked on the document after every save so the next
+/// incremental update's `/Prev` chains to the revision just
+/// written without re-parsing the backing bytes. Anchored at the
+/// end (digits between the last `startxref` and the trailing
+/// `%%EOF`), so binary stream content cannot spoof it.
+#[must_use]
+fn startxref_tail(saved: &[u8]) -> Option<usize> {
+    let tail = saved.strip_suffix(b"\n%%EOF")?;
+    let digits = tail
+        .iter()
+        .rev()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digits == 0 {
+        return None;
+    }
+    let value_start = tail.len() - digits;
+    let marker = b"\nstartxref\n";
+    let marker_start = value_start.checked_sub(marker.len())?;
+    if &tail[marker_start..value_start] != marker {
+        return None;
+    }
+    std::str::from_utf8(&tail[value_start..]).ok()?.parse().ok()
+}
+
+pub(super) fn parse_startxref(saved: &[u8]) -> Result<usize> {
+    startxref_tail(saved).context("saved PDF does not end with startxref offset and %%EOF")
 }

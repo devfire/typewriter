@@ -252,24 +252,57 @@ impl TypewriterApp {
         true
     }
 
-    /// Reload the just-saved `target`, restoring the page/zoom the
-    /// user was viewing. A failed reload keeps `load`'s error in the
-    /// status bar (prefixed with the successful save) instead of
-    /// claiming a clean `Saved`.
-    fn reload_after_save(&mut self, target: &Path) {
-        let page = self.page;
-        let zoom = self.zoom;
-        if self.load(target.to_path_buf()) {
-            self.page = page.min(self.page_count().saturating_sub(1));
-            self.zoom = zoom;
-            self.status = format!("Saved {}", target.display());
-        } else {
-            let reload_error = std::mem::take(&mut self.status);
-            self.status = format!(
-                "Saved {} but reload failed: {reload_error}",
-                target.display()
-            );
+    /// Refresh the preview from the just-saved in-memory document.
+    ///
+    /// `bake_and_save` already established the post-save state
+    /// (`bytes` are the saved bytes, `doc` the merged document,
+    /// overlays drained). Claiming the embedded payload restores
+    /// the boxes as live overlays and makes `render_bytes` the
+    /// preview bytes — exactly what `load` would produce from the
+    /// file, but without re-reading it from disk or re-parsing it
+    /// with lopdf and hayro (the old `reload_after_save` did all
+    /// three, and opened a TOCTOU window when another process
+    /// touched the file between write and reload). A failed hayro
+    /// rebuild keeps the previous preview instead of claiming a
+    /// clean `Saved`.
+    fn refresh_after_save(&mut self, target: &Path) {
+        let Some(doc) = self.pdf_doc.as_mut() else {
+            return;
+        };
+        // Claim the just-stored payload: strips the baked streams
+        // from `doc` and makes `render_bytes` the backing bytes
+        // plus an incremental update with the changed page
+        // dictionaries, so each restored box renders once, as the
+        // live overlay — the same state `load` produces.
+        let restored = doc.take_embedded_boxes();
+        match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.render_bytes)) {
+            Ok(pdf) => {
+                self.hayro_pdf = Some(pdf);
+            }
+            Err(err) => {
+                self.overlays.restore_embedded(restored);
+                self.renderer.invalidate();
+                self.resize_box = None;
+                self.inspector_gesture = None;
+                self.focus_editor = false;
+                self.canvas_view = None;
+                self.pdf_path = Some(target.to_path_buf());
+                self.status = format!(
+                    "Saved {} but preview rebuild failed: {err:?}",
+                    target.display()
+                );
+                return;
+            }
         }
+        self.overlays.restore_embedded(restored);
+        self.renderer.invalidate();
+        self.resize_box = None;
+        self.inspector_gesture = None;
+        self.focus_editor = false;
+        self.canvas_view = None;
+        self.page = self.page.min(self.page_count().saturating_sub(1));
+        self.pdf_path = Some(target.to_path_buf());
+        self.status = format!("Saved {}", target.display());
     }
 
     fn open_dialog(&mut self) {
@@ -342,7 +375,7 @@ impl TypewriterApp {
         };
         match result {
             Ok(()) => {
-                self.reload_after_save(&target);
+                self.refresh_after_save(&target);
                 true
             }
             Err(err) => {
