@@ -39,12 +39,25 @@ fn prompt_button(label: &str, style: ButtonStyle) -> egui::Button<'_> {
 impl TypewriterApp {
     /// Intercept a close request while there are unsaved changes.
     pub(super) fn guard_close(&mut self, ctx: &egui::Context) {
-        if self.close_state != CloseState::Idle || !self.overlays.is_dirty() {
+        if !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if ctx.input(|i| i.viewport().close_requested()) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.close_state = CloseState::Prompting(PendingAction::Close);
+        match self.close_state {
+            CloseState::Allowed => {}
+            CloseState::Idle => {
+                if self.overlays.is_dirty() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                    self.close_state = CloseState::Prompting(PendingAction::Close);
+                }
+            }
+            CloseState::Prompting(_) => {
+                // A prompt is already up: never let the window close
+                // out from under it. The explicit close request
+                // supersedes any parked action, so re-aim the prompt
+                // at closing (a parked `Open` path is dropped).
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.close_state = CloseState::Prompting(PendingAction::Close);
+            }
         }
     }
 

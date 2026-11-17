@@ -319,6 +319,98 @@ fn cancelling_pending_open_keeps_current_document_and_boxes() {
     assert_eq!(app.page_count(), 2);
 }
 
+/// Run one frame whose only input is a window-close request and
+/// return the viewport commands `guard_close` emitted.
+fn close_request_commands(app: &mut TypewriterApp) -> Vec<egui::ViewportCommand> {
+    let ctx = egui::Context::default();
+    let mut input = egui::RawInput::default();
+    input.viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            events: vec![egui::ViewportEvent::Close],
+            ..egui::ViewportInfo::default()
+        },
+    );
+    let output = ctx.run(input, |ctx| app.guard_close(ctx));
+    output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map_or_else(Vec::new, |viewport| viewport.commands.clone())
+}
+
+#[test]
+fn window_close_during_pending_open_prompt_is_cancelled_and_reaimed_at_close() {
+    let current = write_pdf(2);
+    let next = write_pdf(1);
+    let mut app = test_app();
+    assert!(app.load(current.path().to_path_buf()));
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.begin_open(next.path().to_path_buf());
+    assert_eq!(
+        app.close_state,
+        CloseState::Prompting(PendingAction::Open(next.path().to_path_buf()))
+    );
+
+    let commands = close_request_commands(&mut app);
+
+    assert!(
+        commands.contains(&egui::ViewportCommand::CancelClose),
+        "close during Prompting(Open) must be cancelled, got {commands:?}"
+    );
+    assert_eq!(
+        app.close_state,
+        CloseState::Prompting(PendingAction::Close)
+    );
+    assert_eq!(app.overlays.items.len(), 1);
+    assert!(app.overlays.is_dirty());
+    assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
+}
+
+#[test]
+fn window_close_during_pending_close_prompt_is_cancelled() {
+    let mut app = test_app();
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    app.close_state = CloseState::Prompting(PendingAction::Close);
+
+    let commands = close_request_commands(&mut app);
+
+    assert!(
+        commands.contains(&egui::ViewportCommand::CancelClose),
+        "second close during Prompting(Close) must be cancelled, got {commands:?}"
+    );
+    assert_eq!(
+        app.close_state,
+        CloseState::Prompting(PendingAction::Close)
+    );
+    assert_eq!(app.overlays.items.len(), 1);
+    assert!(app.overlays.is_dirty());
+}
+
+#[test]
+fn window_close_without_prompt_still_prompts_only_when_dirty() {
+    // Dirty + Idle: existing behaviour — cancel and prompt.
+    let mut app = test_app();
+    app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
+    let commands = close_request_commands(&mut app);
+    assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+    assert_eq!(
+        app.close_state,
+        CloseState::Prompting(PendingAction::Close)
+    );
+
+    // Clean + Idle and Allowed: the close must pass through.
+    for state in [CloseState::Idle, CloseState::Allowed] {
+        let mut app = test_app();
+        app.close_state = state.clone();
+        let commands = close_request_commands(&mut app);
+        assert!(
+            !commands.contains(&egui::ViewportCommand::CancelClose),
+            "close in {state:?} must pass through, got {commands:?}"
+        );
+        assert_eq!(app.close_state, state);
+    }
+}
+
 #[test]
 fn discarding_pending_open_loads_new_pdf_and_clears_boxes() {
     let current = write_pdf(2);
