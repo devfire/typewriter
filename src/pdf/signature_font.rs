@@ -283,11 +283,11 @@ pub(super) fn signature_alias(
     doc: &Document,
     page_id: ObjectId,
     type0_id: ObjectId,
-) -> Option<String> {
+) -> Option<Vec<u8>> {
     let fonts = super::effective_font_dict(doc, page_id)?;
     for (alias, value) in fonts {
         if value.as_reference().is_ok_and(|id| id == type0_id) {
-            return Some(String::from_utf8_lossy(alias).into_owned());
+            return Some(alias.clone());
         }
     }
     None

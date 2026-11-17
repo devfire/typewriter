@@ -268,11 +268,11 @@ impl PdfDoc {
     /// no `/Widths`, and no embedded `/FontFile*` in its descriptor;
     /// otherwise `WinAnsi` bytes or standard AFM widths would disagree
     /// with the page font.
-    fn ensure_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<String> {
+    fn ensure_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<Vec<u8>> {
         let fonts = effective_fonts(doc, page_id);
         for (name, font) in &fonts {
             if is_standard_winansi_helvetica(doc, font) {
-                return Ok(String::from_utf8_lossy(name).into_owned());
+                return Ok(name.clone());
             }
         }
         let alias = free_alias(&fonts, "F_TW");
@@ -282,7 +282,7 @@ impl PdfDoc {
             "BaseFont" => "Helvetica",
             "Encoding" => "WinAnsiEncoding",
         });
-        insert_font_entry(doc, page_id, alias.as_bytes(), font_id)?;
+        insert_font_entry(doc, page_id, &alias, font_id)?;
         Ok(alias)
     }
 
@@ -294,13 +294,13 @@ impl PdfDoc {
         doc: &mut Document,
         page_id: ObjectId,
         type0_id: ObjectId,
-    ) -> Result<String> {
+    ) -> Result<Vec<u8>> {
         if let Some(alias) = signature_font::signature_alias(doc, page_id, type0_id) {
             return Ok(alias);
         }
         let fonts = effective_fonts(doc, page_id);
         let alias = free_alias(&fonts, "F_SIG");
-        insert_font_entry(doc, page_id, alias.as_bytes(), type0_id)?;
+        insert_font_entry(doc, page_id, &alias, type0_id)?;
         Ok(alias)
     }
 }
@@ -336,15 +336,15 @@ fn is_standard_winansi_helvetica(doc: &Document, font: &Dictionary) -> bool {
 }
 
 /// `base` if free on the page, else `base1`, `base2`, ...
-fn free_alias(fonts: &std::collections::BTreeMap<Vec<u8>, &Dictionary>, base: &str) -> String {
+fn free_alias(fonts: &std::collections::BTreeMap<Vec<u8>, &Dictionary>, base: &str) -> Vec<u8> {
     if !fonts.contains_key(base.as_bytes()) {
-        return base.to_string();
+        return base.as_bytes().to_vec();
     }
     let mut n = 1_u32;
     loop {
         let candidate = format!("{base}{n}");
         if !fonts.contains_key(candidate.as_bytes()) {
-            return candidate;
+            return candidate.into_bytes();
         }
         n += 1;
     }
@@ -353,7 +353,7 @@ fn free_alias(fonts: &std::collections::BTreeMap<Vec<u8>, &Dictionary>, base: &s
 /// Build the `q BT ... ET Q` operations for one box.
 fn box_operations(
     item: &OverlayText,
-    alias: &str,
+    alias: &[u8],
     page_box: (f32, f32, f32, f32),
     rotate: i64,
     sig_font: Option<&signature_font::SignatureFont>,
@@ -375,7 +375,7 @@ fn box_operations(
                 Object::Real(f32::from(item.color[2]) / 255.0),
             ],
         ),
-        Operation::new("Tf", vec![alias.into(), Object::Real(size)]),
+        Operation::new("Tf", vec![Object::Name(alias.to_vec()), Object::Real(size)]),
         Operation::new("Tm", tm),
     ];
     let lines: Vec<Object> = match (item.kind, sig_font) {

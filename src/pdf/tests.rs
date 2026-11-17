@@ -33,7 +33,7 @@ fn two_lines_produce_two_tj_and_one_td() {
     );
     item.text = "a\nb".to_string();
     item.color = [0, 0, 255];
-    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
     assert_eq!(
         operators,
@@ -72,7 +72,7 @@ fn helvetica_width_uses_standard_metrics() {
 #[test]
 fn fixed_width_text_wraps_at_word_boundaries() {
     let item = fixed_width_item("aaaa bbbb cccc", 30.0);
-    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     assert_eq!(
         tj_strings(&ops),
         vec![b"aaaa".to_vec(), b"bbbb".to_vec(), b"cccc".to_vec()]
@@ -86,9 +86,9 @@ fn fixed_width_text_wraps_at_word_boundaries() {
 #[test]
 fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
     let mut item = fixed_width_item("  a\tb   c", 200.0);
-    let fixed_ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let fixed_ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     item.width_pt = None;
-    let auto_ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let auto_ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     assert_eq!(tj_strings(&fixed_ops), vec![b"  a    b   c".to_vec()]);
     assert_eq!(tj_strings(&fixed_ops), tj_strings(&auto_ops));
 }
@@ -96,7 +96,7 @@ fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
 #[test]
 fn fixed_width_long_word_is_hard_broken() {
     let item = fixed_width_item("aaaaaaaaaa", 30.0);
-    let ops = box_operations(&item, "F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
+    let ops = box_operations(&item, b"F_TW", (0.0, 0.0, 612.0, 800.0), 0, None);
     assert_eq!(
         tj_strings(&ops),
         vec![b"aaaa".to_vec(), b"aaaa".to_vec(), b"aa".to_vec()]
@@ -549,13 +549,13 @@ fn existing_ftw_alias_is_not_overwritten() {
     );
     assert_eq!(
         PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
-        "F_TW1"
+        b"F_TW1".to_vec()
     );
     let fonts = pdf.doc.get_page_fonts(page_id).unwrap();
     assert!(fonts.contains_key(b"F_TW1".as_slice()));
     assert_eq!(
         PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
-        "F_TW1"
+        b"F_TW1".to_vec()
     );
 }
 
@@ -603,11 +603,11 @@ fn non_standard_helvetica_on_page_is_not_reused() {
 
     assert_eq!(
         PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
-        "F_TW"
+        b"F_TW".to_vec()
     );
     assert_eq!(
         PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
-        "F_TW"
+        b"F_TW".to_vec()
     );
 }
 
@@ -651,10 +651,10 @@ fn helvetica_from_shadowed_inherited_resources_is_not_reused() {
         .set("Resources", Object::Reference(page_resources_id));
 
     let alias = PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap();
-    assert_eq!(alias, "F_TW");
+    assert_eq!(alias, b"F_TW".to_vec());
     let fonts = effective_fonts(&pdf.doc, page_id);
     let inserted = fonts
-        .get(alias.as_bytes())
+        .get(alias.as_slice())
         .expect("alias used for Tf must exist in effective /Font dict");
     assert!(
         is_standard_winansi_helvetica(&pdf.doc, inserted),
@@ -706,4 +706,54 @@ fn alternating_text_and_signature_bake_in_canvas_order() {
         is_sig(&aliases[0]) && is_text(&aliases[1]) && is_sig(&aliases[2]) && is_text(&aliases[3]),
         "baked paint order must follow canvas order, got {aliases:?}"
     );
+}
+
+#[test]
+fn non_utf8_helvetica_alias_is_reused_verbatim() {
+    // PDF resource names are byte strings, not UTF-8: a reusable
+    // Helvetica under a non-UTF-8 alias (single byte 0xFF) must be
+    // referenced by its exact bytes, not a lossy decoding. Covers
+    // the normal ASCII alias alongside it.
+    for alias in [vec![0xFF], b"F1".to_vec()] {
+        let (mut pdf, out) = fixture_pdf();
+        let page_id = pdf.page_ids[0];
+        let helv_id = pdf.doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type1",
+            "BaseFont" => "Helvetica", "Encoding" => "WinAnsiEncoding",
+        });
+        let mut font = Dictionary::new();
+        font.set(alias.clone(), Object::Reference(helv_id));
+        pdf.doc
+            .get_dictionary_mut(page_id)
+            .unwrap()
+            .set("Resources", dictionary! { "Font" => font });
+        // The baker must reuse the exact alias, whatever its bytes.
+        assert_eq!(
+            PdfDoc::ensure_helvetica(&mut pdf.doc, page_id).unwrap(),
+            alias
+        );
+        let mut overlays = OverlayState::default();
+        let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+        overlays.item_mut(idx).unwrap().text = "Hello".to_string();
+        pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+        let mut tfs = Vec::new();
+        for id in pdf.doc.get_page_contents(page_id) {
+            let stream = pdf.doc.get_object(id).unwrap().as_stream().unwrap();
+            for op in Content::decode(&stream.content).unwrap().operations {
+                if op.operator == "Tf" {
+                    tfs.push(op.operands[0].as_name().unwrap().to_vec());
+                }
+            }
+        }
+        assert!(!tfs.is_empty(), "no Tf emitted for alias {alias:?}");
+        let fonts = effective_fonts(&pdf.doc, page_id);
+        for tf in &tfs {
+            assert_eq!(tf, &alias, "Tf alias mangled: {tfs:?}");
+            assert!(fonts.contains_key(tf), "Tf {tf:?} resolves to no page font");
+        }
+        assert!(
+            pdf.doc.extract_text(&[1]).unwrap().contains("Hello"),
+            "baked text missing for alias {alias:?}"
+        );
+    }
 }
