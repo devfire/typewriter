@@ -355,7 +355,7 @@ impl TypewriterApp {
     ) {
         let id = ui.id().with(("tw-resize", idx));
         let resize_resp = ui
-            .interact(handle_rect, id, egui::Sense::drag())
+            .interact(handle_rect, id, egui::Sense::click_and_drag())
             .on_hover_text("Drag to widen/narrow the box \u{00b7} double-click for auto-fit");
         if resize_resp.double_clicked() {
             self.overlays.checkpoint();

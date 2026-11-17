@@ -664,6 +664,42 @@ fn resize_handle_inner_quadrant_resizes_instead_of_dragging_box() {
 }
 
 #[test]
+fn double_clicking_resize_handle_resets_width_to_auto_fit() {
+    use eframe::egui::{Context, Event, Modifiers, PointerButton, Pos2, Rect, Vec2};
+
+    let mut app = test_app();
+    let id = app.overlays.add(0, 100.0, 100.0, BoxKind::Text);
+    let item = app.overlays.item_mut(id).unwrap();
+    item.text = "Hello".to_string();
+    item.width_pt = Some(80.0);
+
+    let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(612.0, 792.0));
+    let ctx = Context::default();
+    super::theme::apply_theme(&ctx);
+    // Inner quadrant of the 16x16 handle centred on the box's
+    // bottom-right corner (180, ~114); same point the drag test uses.
+    let handle = Pos2::new(176.0, 110.0);
+    let btn = |pressed| Event::PointerButton {
+        pos: handle,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    for events in [
+        Vec::new(),
+        vec![Event::PointerMoved(handle)],
+        vec![btn(true)],
+        vec![btn(false)],
+        vec![btn(true)],
+        vec![btn(false)],
+    ] {
+        let _ = run_canvas(&ctx, &mut app, screen, 1.0, events);
+    }
+
+    assert_eq!(app.overlays.item(id).unwrap().width_pt, None);
+}
+
+#[test]
 fn dragging_box_clamps_to_page_bounds() {
     use eframe::egui::{Context, Pos2, Rect, Vec2};
 
