@@ -462,6 +462,7 @@ fn append_overlay_stream(
     Ok(overlay_id)
 }
 
+mod bounded;
 mod embedded;
 mod helvetica;
 mod page_tree;

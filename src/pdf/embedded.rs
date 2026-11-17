@@ -415,11 +415,11 @@ pub(super) fn strip_verified(
 /// fail verification or (at bake time) abort the save.
 fn plain_stream(doc: &Document, id: ObjectId) -> Option<Vec<u8>> {
     let stream = doc.get_object(id).ok()?.as_stream().ok()?;
-    if stream.content.len() > MAX_STREAM_BYTES {
-        return None;
-    }
-    let plain = stream.get_plain_content().ok()?;
-    (plain.len() <= MAX_STREAM_BYTES).then_some(plain)
+    // Bounded decode: the limit is enforced *during* decompression
+    // (including intermediate filter outputs), so a highly-compressible
+    // stream is rejected near the limit instead of being fully expanded
+    // into memory first.
+    super::bounded::decode_stream_content(stream, MAX_STREAM_BYTES)
 }
 
 /// Validate and convert one stream dictionary.

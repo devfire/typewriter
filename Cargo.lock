@@ -3832,6 +3832,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "eframe",
+ "flate2",
  "hayro",
  "lopdf",
  "rfd",
@@ -3839,6 +3840,7 @@ dependencies = [
  "subsetter",
  "tempfile",
  "ttf-parser",
+ "weezl",
 ]
 
 [[package]]
