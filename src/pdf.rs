@@ -203,11 +203,16 @@ impl PdfDoc {
             .map(|face| signature_font::SignatureFont::prepare(face, &all_sig_boxes))
             .transpose()?;
         // Exactly the boxes being baked, kept for the embedded
-        // payload that makes the saved file re-editable.
+        // payload that makes the saved file re-editable. Rejected
+        // here — before baking anything — when the next open could
+        // not restore them (see `embedded::validate_boxes`): the
+        // save then fails with document and overlays untouched, so
+        // fixing the boxes and retrying bakes exactly once.
         let baked_boxes: Vec<OverlayText> = by_page
             .values()
             .flat_map(|boxes| boxes.iter().map(|item| (*item).clone()))
             .collect();
+        embedded::validate_boxes(&baked_boxes, self.page_ids.len())?;
         let saved = if self.bytes.is_empty() {
             let mut staged = self.doc.clone();
             let baked_streams = Self::bake_pages(

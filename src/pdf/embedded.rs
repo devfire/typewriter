@@ -57,7 +57,7 @@
 //! construction.
 
 use crate::overlay::{BoxId, BoxKind, OverlayText};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use lopdf::{Dictionary, Document, Object, ObjectId, StringFormat};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -129,6 +129,55 @@ struct ExpectedStream {
     sha256: [u8; 32],
 }
 
+/// Writer-side mirror of the reader bounds in [`extract`]/[`decode_box`]:
+/// a payload `store` accepts must be one `extract` restores, so a
+/// successful save can never discard the editable state (see the
+/// module docs). Every bound checked at read time is checked here
+/// on the live boxes: box count, per-box page, coordinates, text
+/// length, size, and width. (Kind and color are enums/`u8` and
+/// cannot be out of range; text encoding always round-trips valid
+/// UTF-16; stream bytes are re-read and hashed below, which
+/// rejects oversize streams.) Fails before touching `doc`, so the
+/// caller can abort the save leaving document and overlays intact.
+pub(super) fn validate_boxes(boxes: &[OverlayText], page_count: usize) -> Result<()> {
+    if boxes.len() > MAX_BOXES {
+        bail!(
+            "cannot save {} boxes (limit {MAX_BOXES}): delete or split them, then save again",
+            boxes.len()
+        );
+    }
+    for item in boxes {
+        if item.page >= page_count {
+            bail!(
+                "cannot save box on page {} (document has {} page(s)): save aborted without changes",
+                item.page + 1,
+                page_count
+            );
+        }
+        if !item.x_pt.is_finite() || item.x_pt.abs() > MAX_POINTS {
+            bail!("cannot save box with out-of-range position: save aborted without changes");
+        }
+        if !item.y_top_pt.is_finite() || item.y_top_pt.abs() > MAX_POINTS {
+            bail!("cannot save box with out-of-range position: save aborted without changes");
+        }
+        let chars = item.text.chars().count();
+        if chars > MAX_TEXT_CHARS {
+            bail!(
+                "cannot save box with {chars} characters (limit {MAX_TEXT_CHARS}): shorten it, then save again"
+            );
+        }
+        if !(0.5..=1_000.0).contains(&f64::from(item.size_pt)) {
+            bail!("cannot save box with out-of-range size: save aborted without changes");
+        }
+        if let Some(width) = item.width_pt
+            && (!width.is_finite() || width.abs() > MAX_POINTS || width <= 0.0)
+        {
+            bail!("cannot save box with out-of-range width: save aborted without changes");
+        }
+    }
+    Ok(())
+}
+
 /// Store `boxes` (exactly the boxes just baked, which produced
 /// `baked`) in `doc`'s catalog, replacing any payload from an
 /// earlier save. Each baked stream's hash is computed from `doc`
@@ -142,11 +191,33 @@ pub(super) fn store(
     boxes: &[OverlayText],
     baked: &[BakedStream],
 ) -> Result<()> {
+    // Reject a payload the next open would ignore, before writing
+    // anything or (via the caller) draining overlays: a successful
+    // save must restore every box.
+    validate_boxes(boxes, doc.get_pages().len())?;
     if boxes.is_empty() {
-        if let Ok(catalog) = doc.catalog_mut() {
-            catalog.remove(CATALOG_KEY);
+        if baked.is_empty() {
+            if let Ok(catalog) = doc.catalog_mut() {
+                catalog.remove(CATALOG_KEY);
+            }
+            return Ok(());
         }
-        return Ok(());
+        bail!("cannot save: no boxes but baked streams present");
+    }
+    // The payload must describe exactly one stream per page that
+    // has boxes, mirroring `extract`: anything else would not
+    // round-trip.
+    if baked.is_empty() || baked.len() > doc.get_pages().len() {
+        bail!("cannot save: baked streams do not match the boxes");
+    }
+    let box_pages: BTreeSet<usize> = boxes.iter().map(|item| item.page).collect();
+    let stream_pages: BTreeSet<usize> = baked.iter().map(|stream| stream.page).collect();
+    if box_pages != stream_pages {
+        bail!("cannot save: baked streams do not match the boxes");
+    }
+    let unique_ids: HashSet<ObjectId> = baked.iter().map(|stream| stream.id).collect();
+    if unique_ids.len() != baked.len() {
+        bail!("cannot save: baked streams do not match the boxes");
     }
     let mut stream_dicts = Vec::with_capacity(baked.len());
     for stream in baked {

@@ -536,3 +536,89 @@ fn wrap_marker_in_preexisting_content_does_not_void_payload() {
     assert_eq!(boxes.len(), 1, "pre-existing marker must not void payload");
     assert_eq!(boxes[0].text, "Hello");
 }
+
+#[test]
+fn oversized_text_fails_save_and_boundary_round_trips() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let id = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(id).unwrap().text = "a".repeat(100_001);
+    let err = pdf.bake_and_save(&mut overlays, out.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("100001") && err.to_string().contains("100000"),
+        "unexpected: {err:#}"
+    );
+    // Nothing baked, nothing cleared, nothing written.
+    assert_eq!(overlays.items.len(), 1);
+    assert!(overlays.is_dirty());
+    assert!(pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty());
+    assert!(!out.path().exists());
+
+    // Exactly at the reader limit: saves and restores whole.
+    overlays.item_mut(id).unwrap().text = "a".repeat(100_000);
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let mut reopened = PdfDoc::open(out.path()).unwrap();
+    let boxes = reopened.take_embedded_boxes();
+    assert_eq!(boxes.len(), 1);
+    assert_eq!(boxes[0].text.chars().count(), 100_000);
+
+    // Same failure on the incremental path leaves file and state alone:
+    // reopen and claim (as the app does), so the next bake diffs
+    // against stripped contents.
+    let mut pdf = PdfDoc::open(out.path()).unwrap();
+    let mut overlays = OverlayState::default();
+    overlays.restore_embedded(pdf.take_embedded_boxes());
+    assert_eq!(overlays.items.len(), 1);
+    let id = overlays.add(0, 72.0, 200.0, BoxKind::Text);
+    overlays.item_mut(id).unwrap().text = "b".repeat(100_001);
+    let bytes_before = std::fs::read(out.path()).unwrap();
+    let contents_before = pdf.doc.get_page_contents(pdf.page_ids[0]).len();
+    let err = pdf.bake_and_save(&mut overlays, out.path()).unwrap_err();
+    assert!(err.to_string().contains("100000"), "unexpected: {err:#}");
+    assert_eq!(std::fs::read(out.path()).unwrap(), bytes_before);
+    assert_eq!(overlays.items.len(), 2);
+    assert!(overlays.is_dirty());
+    // Rejected before baking anything, so the stripped document
+    // is untouched and the retry bakes exactly once.
+    assert_eq!(
+        pdf.doc.get_page_contents(pdf.page_ids[0]).len(),
+        contents_before
+    );
+    // Shortening the box makes the retry succeed.
+    overlays.item_mut(id).unwrap().text = "Hello again".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let mut reopened = PdfDoc::open(out.path()).unwrap();
+    let boxes = reopened.take_embedded_boxes();
+    assert_eq!(boxes.len(), 2);
+    assert!(boxes.iter().any(|b| b.text == "Hello again"), "{boxes:?}");
+}
+
+#[test]
+fn too_many_boxes_fail_save_and_boundary_round_trips() {
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    for _ in 0..10_001 {
+        let mut item = crate::overlay::OverlayText::new(
+            crate::overlay::BoxId::default(),
+            0,
+            72.0,
+            72.0,
+            BoxKind::Text,
+        );
+        item.text = "x".to_string();
+        overlays.items.push(item);
+    }
+    let err = pdf.bake_and_save(&mut overlays, out.path()).unwrap_err();
+    assert!(
+        err.to_string().contains("10001") && err.to_string().contains("10000"),
+        "unexpected: {err:#}"
+    );
+    assert_eq!(overlays.items.len(), 10_001);
+    assert!(pdf.doc.get_page_contents(pdf.page_ids[0]).is_empty());
+    assert!(!out.path().exists());
+
+    overlays.items.pop();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let mut reopened = PdfDoc::open(out.path()).unwrap();
+    assert_eq!(reopened.take_embedded_boxes().len(), 10_000);
+}
