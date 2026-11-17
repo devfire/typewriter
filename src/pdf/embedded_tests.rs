@@ -497,3 +497,42 @@ fn tampered_wrapper_is_not_restored_or_stripped() {
     doc.save(out.path()).unwrap();
     assert_not_restored_and_not_stripped(out.path());
 }
+
+#[test]
+fn wrap_marker_in_box_text_still_restores() {
+    // User data containing `%TypewriterWrap` inside a baked overlay must
+    // not be mistaken for a wrapper stream: the overlay is recognized by
+    // prefix + hash first, wrappers only by exact bytes at their positions.
+    let (mut pdf, out) = super::tests::fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let id = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(id).unwrap().text = "a %TypewriterWrap b".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let mut reopened = PdfDoc::open(out.path()).unwrap();
+    let boxes = reopened.take_embedded_boxes();
+    assert_eq!(boxes.len(), 1, "marker text must not void the payload");
+    assert_eq!(boxes[0].text, "a %TypewriterWrap b");
+}
+
+#[test]
+fn wrap_marker_in_preexisting_content_does_not_void_payload() {
+    // Pre-existing page text carrying the same bytes must not invalidate
+    // an otherwise valid bake: wrappers are positional exact matches.
+    let (mut pdf, out) = super::tests::fixture_pdf();
+    let original: Vec<u8> = b"BT (%TypewriterWrap) Tj ET\n".to_vec();
+    let original_id = pdf
+        .doc
+        .add_object(Stream::new(lopdf::Dictionary::new(), original.clone()));
+    pdf.doc
+        .get_dictionary_mut(pdf.page_ids[0])
+        .unwrap()
+        .set("Contents", Object::Reference(original_id));
+    let mut overlays = OverlayState::default();
+    let id = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(id).unwrap().text = "Hello".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let mut reopened = PdfDoc::open(out.path()).unwrap();
+    let boxes = reopened.take_embedded_boxes();
+    assert_eq!(boxes.len(), 1, "pre-existing marker must not void payload");
+    assert_eq!(boxes[0].text, "Hello");
+}

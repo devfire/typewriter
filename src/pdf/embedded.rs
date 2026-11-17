@@ -68,15 +68,12 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 /// the hash verification in [`verify`].
 pub(super) const OVERLAY_MARKER: &[u8] = b"%TypewriterOverlay\n";
 
-/// Marker in the `q` / `Q` wrapper streams a bake puts around
-/// pre-existing page content (see `append_overlay_stream`). A PDF
-/// comment trailing the operator — comment-first streams make
-/// some content parsers drop the operator — so renderers and
-/// parsers see plain `q`/`Q`. A wrapper is trusted only as a
-/// matched pair in the exact positions `verify` checks, around
-/// a hash-verified overlay.
-pub(super) const WRAP_MARKER: &[u8] = b"%TypewriterWrap";
-/// Whole contents of the marked graphics-state save wrapper.
+/// Whole contents of the marked graphics-state save wrapper (`q` plus a
+/// `%TypewriterWrap` comment trailing the operator — comment-first streams
+/// make some content parsers drop the operator — so renderers and parsers
+/// see plain `q`; see `append_overlay_stream`). A wrapper is trusted only
+/// as a matched pair in the exact positions `verify` checks, around a
+/// hash-verified overlay.
 pub(super) const WRAP_SAVE: &[u8] = b"q %TypewriterWrap\n";
 /// Whole contents of the marked graphics-state restore wrapper.
 /// The leading newline guards against a preceding stream that
@@ -273,34 +270,20 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
     for (page, &page_id) in page_ids.iter().enumerate() {
         let contents = doc.get_page_contents(page_id);
         let expected_here = expected.get(&page);
+        // Decode once: overlay recognition (prefix + hash) runs before
+        // any wrapper logic, so user text containing `%TypewriterWrap`
+        // inside a baked overlay — or pre-existing page text carrying
+        // the same bytes — is never mistaken for a wrapper. Wrappers
+        // are recognized only by exact byte equality at the written
+        // positions, never by substring search.
+        let plains: Vec<Option<Vec<u8>>> =
+            contents.iter().map(|id| plain_stream(doc, *id)).collect();
         let mut found = false;
         let mut overlay_at = None;
-        let mut wrap_save_at = None;
-        let mut wrap_restore_at = None;
-        for (at, id) in contents.iter().enumerate() {
-            // Non-stream entries in `/Contents` cannot occur from
-            // lopdf's accessor, but an unreadable object is simply
-            // not a baked stream; it is never stripped either way.
-            let Some(plain) = plain_stream(doc, *id) else {
+        for (at, (id, plain)) in contents.iter().zip(plains.iter()).enumerate() {
+            let Some(plain) = plain else {
                 continue;
             };
-            if plain
-                .windows(WRAP_MARKER.len())
-                .any(|window| window == WRAP_MARKER)
-            {
-                let slot = if plain == WRAP_SAVE {
-                    &mut wrap_save_at
-                } else if plain == WRAP_RESTORE {
-                    &mut wrap_restore_at
-                } else {
-                    return false;
-                };
-                if slot.is_some() {
-                    return false;
-                }
-                *slot = Some(at);
-                continue;
-            }
             if !plain.starts_with(OVERLAY_MARKER) {
                 continue;
             }
@@ -311,7 +294,7 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
             // divergence the payload cannot account for.
             match expected_here {
                 Some(stream) if stream.id == *id && !found => {
-                    if Sha256::digest(&plain)[..] != stream.sha256 {
+                    if Sha256::digest(plain)[..] != stream.sha256 {
                         return false;
                     }
                     found = true;
@@ -322,6 +305,33 @@ pub(super) fn verify(doc: &Document, page_ids: &[ObjectId], embedded: &Embedded)
         }
         if expected_here.is_some() && !found {
             return false;
+        }
+        // Exact wrapper bytes only; any other stream — including one
+        // whose user text or pre-existing content merely contains the
+        // marker substring — is not a wrapper. A lone, duplicated, or
+        // misplaced exact wrapper still voids the claim, as does a
+        // missing half when one exact half survives (the tampered-pair
+        // shape), so no save leaves a dangling half-pair behind.
+        let mut wrap_save_at = None;
+        let mut wrap_restore_at = None;
+        for (at, plain) in plains.iter().enumerate() {
+            if Some(at) == overlay_at {
+                continue;
+            }
+            let Some(plain) = plain else {
+                continue;
+            };
+            if plain.as_slice() == WRAP_SAVE {
+                if wrap_save_at.is_some() {
+                    return false;
+                }
+                wrap_save_at = Some(at);
+            } else if plain.as_slice() == WRAP_RESTORE {
+                if wrap_restore_at.is_some() {
+                    return false;
+                }
+                wrap_restore_at = Some(at);
+            }
         }
         // The wrappers, if any, must be the matched pair around
         // everything before the recorded overlay.
