@@ -75,6 +75,7 @@ impl PdfDoc {
     pub(super) fn bake_and_save_incremental(
         &mut self,
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
+        baked_boxes: &[OverlayText],
         sig_font: Option<&signature_font::SignatureFont>,
         sig_face: Option<&ttf_parser::Face<'_>>,
         out: &Path,
@@ -88,6 +89,10 @@ impl PdfDoc {
             sig_font,
             sig_face,
         )?;
+        // Embed the just-baked boxes so the saved file reopens
+        // editable; part of the same diff, so payload and baked
+        // streams always land in the same incremental revision.
+        super::embedded::store(&mut self.doc, baked_boxes)?;
         // The previous revision, re-parsed from the untouched bytes:
         // the diff against it is exactly this update's object set.
         // Changed pre-existing objects are always dictionaries (page,

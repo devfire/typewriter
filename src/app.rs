@@ -195,15 +195,21 @@ impl TypewriterApp {
     /// untouched, with the reason in `status`) when the file cannot
     /// be opened or rendered.
     fn load(&mut self, path: PathBuf) -> bool {
-        let doc = match PdfDoc::open(&path) {
+        let mut doc = match PdfDoc::open(&path) {
             Ok(doc) => doc,
             Err(err) => {
                 self.status = format!("Could not open {}: {err:#}", path.display());
                 return false;
             }
         };
-        // Shares the single `Arc<Vec<u8>>` allocation with `PdfDoc`.
-        let hayro_pdf = match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.bytes)) {
+        // Claim any embedded boxes before rendering: claiming
+        // strips their baked streams and re-derives `render_bytes`
+        // from the stripped document, so each restored box renders
+        // once, as the live overlay. Shares the single
+        // `Arc<Vec<u8>>` allocation with `PdfDoc`.
+        let restored = doc.take_embedded_boxes();
+        let restored_count = restored.len();
+        let hayro_pdf = match hayro::hayro_syntax::Pdf::new(std::sync::Arc::clone(&doc.render_bytes)) {
             Ok(pdf) => pdf,
             Err(hayro::hayro_syntax::LoadPdfError::Decryption(_)) => {
                 self.status = "Encrypted/password-protected PDFs are not supported.".to_string();
@@ -214,7 +220,7 @@ impl TypewriterApp {
                 return false;
             }
         };
-        self.overlays.clear_baked();
+        self.overlays.restore_embedded(restored);
         self.renderer.invalidate();
         self.resize_box = None;
         self.focus_editor = false;
@@ -222,7 +228,15 @@ impl TypewriterApp {
         self.page = 0;
         self.pdf_doc = Some(doc);
         self.hayro_pdf = Some(hayro_pdf);
-        self.status = format!("Opened {}", path.display());
+        self.status = if restored_count > 0 {
+            format!(
+                "Opened {} \u{2014} restored {restored_count} editable {}",
+                path.display(),
+                if restored_count == 1 { "box" } else { "boxes" }
+            )
+        } else {
+            format!("Opened {}", path.display())
+        };
         self.pdf_path = Some(path);
         true
     }

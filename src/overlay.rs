@@ -282,6 +282,22 @@ impl OverlayState {
         }
     }
 
+    /// Adopt boxes restored from a PDF's embedded payload (see
+    /// `pdf::embedded`) as the live, clean state: fresh session ids
+    /// (payload ids are placeholders), no selection, not dirty —
+    /// the boxes are already baked into the file as opened, so
+    /// closing without edits has nothing to save. History is
+    /// cleared: undo must not resurrect pre-load state.
+    pub fn restore_embedded(&mut self, mut items: Vec<OverlayText>) {
+        for item in &mut items {
+            item.id = self.fresh_id();
+        }
+        self.items = items;
+        self.selected = None;
+        self.dirty = false;
+        self.history.clear();
+    }
+
     /// Clear everything after a successful bake.
     pub fn clear_baked(&mut self) {
         self.items.clear();

@@ -64,6 +64,8 @@ fn multi_page_signature_bake_embeds_font_program_once() {
     let out = TempFile::new("multipage-sig");
     let mut pdf = PdfDoc {
         bytes: Arc::new(Vec::new()),
+        render_bytes: Arc::new(Vec::new()),
+        embedded_boxes: Vec::new(),
         doc,
         page_ids,
         sizes_pt: vec![(612.0, 792.0); 2],

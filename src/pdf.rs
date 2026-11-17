@@ -30,6 +30,18 @@ use std::sync::Arc;
 /// save re-emits before appending its update.
 pub struct PdfDoc {
     pub bytes: Arc<Vec<u8>>,
+    /// Bytes hayro should render. Identical to `bytes` until the
+    /// embedded boxes are claimed via `take_embedded_boxes`: then
+    /// the baked overlay streams are stripped from `doc` (see
+    /// `embedded`) and this is that stripped document,
+    /// re-serialized, so the preview shows each restored box once
+    /// instead of over its baked copy. Never saved; saves stay
+    /// incremental on `bytes`.
+    pub render_bytes: Arc<Vec<u8>>,
+    /// Boxes restored from the `/Typewriter` catalog payload,
+    /// waiting for the app to move them into its `OverlayState`
+    /// via [`PdfDoc::take_embedded_boxes`]. Empty for plain PDFs.
+    embedded_boxes: Vec<OverlayText>,
     doc: Document,
     page_ids: Vec<ObjectId>,
     /// Display size per page in points (rotation-aware).
@@ -77,14 +89,49 @@ impl PdfDoc {
             let rotated = matches!(rotate, 90 | 270);
             sizes_pt.push(if rotated { (h, w) } else { (w, h) });
         }
+        // A valid `/Typewriter` payload means the baked overlay
+        // streams in this file are this app's own boxes. They are
+        // decoded now but only claimed (and their streams stripped)
+        // by `take_embedded_boxes`, so a caller that opens and
+        // re-saves without claiming them keeps the old behaviour.
+        let embedded_boxes = embedded::extract(&doc, page_ids.len()).unwrap_or_default();
+        let render_bytes = Arc::clone(&bytes);
         Ok(Self {
             bytes,
+            render_bytes,
+            embedded_boxes,
             doc,
             page_ids,
             sizes_pt,
             boxes_pt,
             rotations,
         })
+    }
+
+    /// Claim the boxes restored from the embedded payload, leaving
+    /// none behind. Claiming un-references their baked streams in
+    /// `doc` and re-derives `render_bytes` from the stripped
+    /// document, so the boxes render once (as live overlays, owned
+    /// by the caller's `OverlayState`) and a later save re-bakes
+    /// them instead of duplicating the old text. The file on disk
+    /// is untouched until that save, whose incremental diff then
+    /// persists the removal. The app calls this once, right after
+    /// opening; never claiming the boxes leaves the document
+    /// exactly as a plain baked PDF.
+    pub fn take_embedded_boxes(&mut self) -> Vec<OverlayText> {
+        let boxes = std::mem::take(&mut self.embedded_boxes);
+        if boxes.is_empty() {
+            return boxes;
+        }
+        embedded::strip_baked_streams(&mut self.doc, &self.page_ids);
+        let mut rendered = Vec::new();
+        if self.doc.save_to(&mut rendered).is_ok() && !rendered.is_empty() {
+            self.render_bytes = Arc::new(rendered);
+        }
+        // On serialization failure `render_bytes` stays as the
+        // baked bytes: the preview draws boxes over their copies
+        // rather than failing to open.
+        boxes
     }
 
     pub fn page_count(&self) -> usize {
@@ -145,6 +192,12 @@ impl PdfDoc {
             .as_ref()
             .map(|face| signature_font::SignatureFont::prepare(face, &all_sig_boxes))
             .transpose()?;
+        // Exactly the boxes being baked, kept for the embedded
+        // payload that makes the saved file re-editable.
+        let baked_boxes: Vec<OverlayText> = by_page
+            .values()
+            .flat_map(|boxes| boxes.iter().map(|item| (*item).clone()))
+            .collect();
         let saved = if self.bytes.is_empty() {
             let mut staged = self.doc.clone();
             Self::bake_pages(
@@ -156,6 +209,7 @@ impl PdfDoc {
                 sig_font.as_ref(),
                 sig_face.as_ref(),
             )?;
+            embedded::store(&mut staged, &baked_boxes)?;
             let mut saved = Vec::new();
             staged
                 .save_to(&mut saved)
@@ -166,6 +220,7 @@ impl PdfDoc {
         } else {
             match self.bake_and_save_incremental(
                 &by_page,
+                &baked_boxes,
                 sig_font.as_ref(),
                 sig_face.as_ref(),
                 out,
@@ -183,6 +238,10 @@ impl PdfDoc {
             }
         };
         self.bytes = Arc::new(saved);
+        // The just-saved bytes render correctly as-is (the boxes
+        // are baked in and the overlays are drained below); the app
+        // reloads right after saving anyway.
+        self.render_bytes = Arc::clone(&self.bytes);
         overlays.clear_baked();
         Ok(())
     }
@@ -363,11 +422,17 @@ fn append_overlay_stream(
     operations: Vec<Operation>,
 ) -> Result<()> {
     let existing = doc.get_page_contents(page_id);
+    // Every baked stream carries the marker a later open uses to
+    // un-reference it when the embedded boxes are restored.
+    let mut marked_bytes = embedded::OVERLAY_MARKER.to_vec();
+    marked_bytes.extend_from_slice(&Content::encode(&Content { operations })?);
     if existing.is_empty() {
-        doc.add_to_page_content(page_id, Content { operations })?;
+        let overlay_id = doc.add_object(Stream::new(Dictionary::new(), marked_bytes));
+        doc.get_dictionary_mut(page_id)?
+            .set("Contents", Object::Reference(overlay_id));
         return Ok(());
     }
-    let overlay_bytes = Content::encode(&Content { operations })?;
+    let overlay_bytes = marked_bytes;
     let save_id = doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
     // Leading newline guards against an existing stream that does not
     // end with whitespace when viewers or `get_page_content` concatenate
@@ -384,6 +449,7 @@ fn append_overlay_stream(
     Ok(())
 }
 
+mod embedded;
 mod helvetica;
 mod page_tree;
 mod save;
@@ -393,6 +459,8 @@ mod winansi;
 pub(crate) use helvetica::helvetica_width_pt;
 pub use winansi::{winansi_bytes, winansi_lines};
 
+#[cfg(test)]
+mod embedded_tests;
 #[cfg(test)]
 mod encrypted_tests;
 #[cfg(test)]
