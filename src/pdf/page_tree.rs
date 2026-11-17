@@ -53,16 +53,20 @@ fn parent_chain_find<T>(
 /// Walk the `Parent` chain looking for an inherited array entry.
 /// A present-but-malformed array aborts the walk rather than
 /// silently inheriting an ancestor's box.
+///
+/// Rectangles are normalized to `(min x, min y, max x, max y)`:
+/// ISO 32000-1 §7.9.5 allows the two diagonally opposite corners
+/// in any order, and readers (including hayro) normalize them.
 fn inherited_array(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f32; 4]> {
     parent_chain_find(doc, page_id, |_id, dict| {
         let Ok(obj) = dict.get(key) else {
             return ParentVisit::Continue;
         };
         let Some(Object::Array(items)) = resolve(doc, obj) else {
-            return ParentVisit::Continue;
+            return ParentVisit::Stop;
         };
         if items.len() < 4 {
-            return ParentVisit::Continue;
+            return ParentVisit::Stop;
         }
         let mut out = [0.0_f32; 4];
         for (slot, item) in out.iter_mut().zip(items.iter()) {
@@ -71,7 +75,8 @@ fn inherited_array(doc: &Document, page_id: ObjectId, key: &[u8]) -> Option<[f32
             };
             *slot = value;
         }
-        ParentVisit::Found(out)
+        let [x0, y0, x1, y1] = out;
+        ParentVisit::Found([x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)])
     })
 }
 

@@ -187,6 +187,35 @@ fn cropped_pages_bake_text_at_previewed_position() {
     assert!(pdf.doc.extract_text(&[1]).unwrap().contains("Hello"));
 }
 
+#[test]
+fn inverted_media_box_opens_with_positive_size() {
+    // ISO 32000-1 §7.9.5: corners may be listed in any order.
+    let (mut fixture, _out) = fixture_pdf();
+    let page_id = fixture.page_ids[0];
+    fixture.doc.get_dictionary_mut(page_id).unwrap().set(
+        "MediaBox",
+        vec![612.into(), 792.into(), 0.into(), 0.into()],
+    );
+    let input = TempFile::new("inverted-mediabox");
+    fixture.doc.save(input.path()).unwrap();
+    let pdf = PdfDoc::open(input.path()).unwrap();
+    assert_eq!(pdf.sizes_pt, vec![(612.0, 792.0)]);
+}
+
+#[test]
+fn inverted_crop_box_intersects_like_normalized_crop_box() {
+    let (mut fixture, _out) = fixture_pdf();
+    let page_id = fixture.page_ids[0];
+    fixture.doc.get_dictionary_mut(page_id).unwrap().set(
+        "CropBox",
+        vec![576.into(), 744.into(), 36.into(), 48.into()],
+    );
+    let input = TempFile::new("inverted-cropbox");
+    fixture.doc.save(input.path()).unwrap();
+    let pdf = PdfDoc::open(input.path()).unwrap();
+    assert_eq!(pdf.sizes_pt, vec![(540.0, 696.0)]);
+}
+
 fn render_first_page_rgba(path: &Path) -> Vec<u8> {
     let pdf = hayro::hayro_syntax::Pdf::new(std::fs::read(path).unwrap()).unwrap();
     let pix = hayro::render(
@@ -417,6 +446,42 @@ fn open_without_media_or_crop_box_is_an_error() {
     fixture.doc.save(input.path()).unwrap();
     let Err(err) = PdfDoc::open(input.path()) else {
         panic!("page without MediaBox/CropBox must not open");
+    };
+    assert!(
+        err.to_string().contains("no MediaBox or CropBox"),
+        "unexpected: {err:#}"
+    );
+}
+
+#[test]
+fn short_media_box_aborts_instead_of_inheriting() {
+    // A present-but-malformed (fewer than 4 numbers) MediaBox must
+    // abort the parent walk, like a non-numeric element does, rather
+    // than silently inheriting the ancestor's box.
+    let (mut fixture, _out) = fixture_pdf();
+    let page_id = fixture.page_ids[0];
+    let parent_id = fixture
+        .doc
+        .get_dictionary(page_id)
+        .unwrap()
+        .get(b"Parent")
+        .unwrap()
+        .as_reference()
+        .unwrap();
+    fixture
+        .doc
+        .get_dictionary_mut(parent_id)
+        .unwrap()
+        .set("MediaBox", vec![0.into(), 0.into(), 100.into(), 100.into()]);
+    fixture
+        .doc
+        .get_dictionary_mut(page_id)
+        .unwrap()
+        .set("MediaBox", vec![0.into(), 0.into(), 612.into()]);
+    let input = TempFile::new("short-mediabox");
+    fixture.doc.save(input.path()).unwrap();
+    let Err(err) = PdfDoc::open(input.path()) else {
+        panic!("page with short MediaBox must not open via inherited box");
     };
     assert!(
         err.to_string().contains("no MediaBox or CropBox"),
