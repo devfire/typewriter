@@ -299,7 +299,7 @@ impl TypewriterApp {
                     .set_level(rfd::MessageLevel::Warning)
                     .set_title("Overwrite PDF?")
                     .set_description(format!(
-                        "Save baked text into {}? This rewrites the file.",
+                        "Save baked text into {}? This appends an incremental update to the file.",
                         source.display()
                     ))
                     .set_buttons(rfd::MessageButtons::YesNo)

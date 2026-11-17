@@ -2,10 +2,14 @@
 //!
 //! Original page content streams are left intact and bracketed in
 //! `q`/`Q` streams so baked text and signatures (appended in a new
-//! content stream per page) start in the default graphics state, and
-//! the updated document is written out via lopdf. Existing usable
-//! Helvetica fonts are reused; a new standard-14 Helvetica or embedded
-//! signature font is added only when needed.
+//! content stream per page) start in the default graphics state.
+//! Saves are incremental updates: the bytes as opened (or last saved)
+//! are emitted verbatim, followed only by the objects a bake added or
+//! changed, a new xref section, and a trailer chaining to the previous
+//! xref via `/Prev` (lopdf `IncrementalDocument`). Byte ranges covered
+//! by existing digital signatures therefore stay intact. Existing
+//! usable Helvetica fonts are reused; a new standard-14 Helvetica or
+//! embedded signature font is added only when needed.
 
 use crate::overlay::{BoxKind, LEADING, OverlayState, OverlayText, text_matrix, wrap_lines};
 use anyhow::{Context, Result, bail};
@@ -17,15 +21,13 @@ use page_tree::{
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Counter for unique temp-file names used by atomic saves.
-static SAVE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Loaded PDF. The raw file bytes live in one `Arc<Vec<u8>>` shared
 /// with hayro's renderer (`PdfData: From<Arc<Vec<u8>>>`), so no
 /// full-file clone is retained; lopdf separately holds its own
-/// parsed representation in `doc`.
+/// parsed representation in `doc`. `bytes` is the file as opened or
+/// last successfully saved: the exact prefix the next incremental
+/// save re-emits before appending its update.
 pub struct PdfDoc {
     pub bytes: Arc<Vec<u8>>,
     doc: Document,
@@ -90,15 +92,24 @@ impl PdfDoc {
     }
 
     /// Bake every non-empty overlay box into its page as a new content
-    /// stream and save to `out`. On success the baked boxes are drained
-    /// from `overlays` (second save therefore adds zero new streams).
+    /// stream and save to `out` as an incremental update. On success
+    /// the baked boxes are drained from `overlays` (second save
+    /// therefore adds zero new streams).
     ///
-    /// The bake is staged on a clone of the document and swapped into
-    /// `self` only after the save succeeds, so a failure on any page or
-    /// during the write leaves `self.doc` and `overlays` unchanged and a
-    /// retry cannot double-bake earlier pages. The file write itself is
+    /// The document parsed from `bytes` is never re-serialized: only
+    /// objects the bake added or changed are appended after the
+    /// untouched original bytes, with the new trailer's `/Prev`
+    /// chaining to the previous xref. The bake mutates `self.doc`
+    /// (the merged logical document) directly instead of a staged
+    /// clone; on any failure `self.doc` is restored by re-parsing
+    /// the untouched `bytes`, `overlays` is left intact, and a retry
+    /// cannot double-bake earlier pages. The file write itself is
     /// atomic (temp file in the target directory + `rename`), so an
-    /// in-place save never leaves a truncated original behind.
+    /// in-place save never leaves a truncated original behind. A
+    /// document built in memory (no backing bytes, e.g. in tests)
+    /// has nothing to append to, so its first save is a full write
+    /// staged on a clone; that establishes the bytes later saves
+    /// append to.
     pub fn bake_and_save(&mut self, overlays: &mut OverlayState, out: &Path) -> Result<()> {
         let mut by_page: BTreeMap<usize, Vec<&OverlayText>> = BTreeMap::new();
         for item in overlays.items.iter().filter(|item| !item.is_empty()) {
@@ -134,95 +145,46 @@ impl PdfDoc {
             .as_ref()
             .map(|face| signature_font::SignatureFont::prepare(face, &all_sig_boxes))
             .transpose()?;
-        let mut staged = self.doc.clone();
-        let shared_sig_font = sig_font
-            .as_ref()
-            .zip(sig_face.as_ref())
-            .map(|(font, face)| font.embed(&mut staged, face));
-        for (page, boxes) in by_page {
-            let page_id = self.page_ids[page];
-            let page_box = self.boxes_pt[page];
-            let rotate = self.rotations[page];
-            let mut operations = Vec::new();
-            let text_boxes: Vec<&OverlayText> = boxes
-                .iter()
-                .copied()
-                .filter(|item| item.kind == BoxKind::Text)
-                .collect();
-            if !text_boxes.is_empty() {
-                let alias = Self::ensure_helvetica(&mut staged, page_id)?;
-                for item in text_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, rotate, None));
+        let saved = if self.bytes.is_empty() {
+            let mut staged = self.doc.clone();
+            Self::bake_pages(
+                &mut staged,
+                &self.page_ids,
+                &self.boxes_pt,
+                &self.rotations,
+                &by_page,
+                sig_font.as_ref(),
+                sig_face.as_ref(),
+            )?;
+            let mut saved = Vec::new();
+            staged
+                .save_to(&mut saved)
+                .with_context(|| format!("failed to save {}", out.display()))?;
+            Self::atomic_write(&saved, out)?;
+            self.doc = staged;
+            saved
+        } else {
+            match self.bake_and_save_incremental(
+                &by_page,
+                sig_font.as_ref(),
+                sig_face.as_ref(),
+                out,
+            ) {
+                Ok(saved) => saved,
+                Err(err) => {
+                    // Restore the merged document from the untouched
+                    // backing bytes; if even that fails the save's
+                    // error is the one the caller needs.
+                    if let Ok(restored) = Document::load_mem(&self.bytes) {
+                        self.doc = restored;
+                    }
+                    return Err(err);
                 }
             }
-            let sig_boxes: Vec<&OverlayText> = boxes
-                .iter()
-                .copied()
-                .filter(|item| item.kind == BoxKind::Signature)
-                .collect();
-            if let (false, Some(font), Some(type0_id)) =
-                (sig_boxes.is_empty(), sig_font.as_ref(), shared_sig_font)
-            {
-                let alias = Self::ensure_signature(&mut staged, page_id, type0_id)?;
-                for item in sig_boxes {
-                    operations.extend(box_operations(item, &alias, page_box, rotate, Some(font)));
-                }
-            }
-            append_overlay_stream(&mut staged, page_id, operations)
-                .context("failed to append overlay content stream")?;
-        }
-        Self::atomic_save(&mut staged, out)?;
-        self.doc = staged;
+        };
+        self.bytes = Arc::new(saved);
         overlays.clear_baked();
         Ok(())
-    }
-
-    /// Write `staged` to `out` without ever truncating `out` in place.
-    ///
-    /// The document is saved to a unique temp file in the same directory
-    /// (so the final `rename` stays on one filesystem and is atomic),
-    /// `sync_all`-ed, then renamed over `out`. A failed write leaves the
-    /// original intact and removes the temp file. When `out` already
-    /// exists, its permissions are re-applied to the replacement.
-    fn atomic_save(staged: &mut Document, out: &Path) -> Result<()> {
-        let dir = out
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| std::path::PathBuf::from("."), Path::to_path_buf);
-        let stem = out.file_name().map_or_else(
-            || std::ffi::OsString::from("out.pdf"),
-            std::ffi::OsStr::to_os_string,
-        );
-        let seq = SAVE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut tmp_name = std::ffi::OsString::from(".");
-        tmp_name.push(&stem);
-        tmp_name.push(format!(".tmp-{}-{seq}", std::process::id()));
-        let tmp = dir.join(tmp_name);
-        let result = (|| {
-            let permissions = std::fs::metadata(out).map(|m| m.permissions()).ok();
-            staged
-                .save(&tmp)
-                .with_context(|| format!("failed to save {}", out.display()))?;
-            if let Some(permissions) = permissions {
-                std::fs::set_permissions(&tmp, permissions).with_context(|| {
-                    format!("failed to preserve permissions for {}", out.display())
-                })?;
-            }
-            std::fs::File::open(&tmp)
-                .with_context(|| format!("failed to sync {}", out.display()))?
-                .sync_all()
-                .with_context(|| format!("failed to sync {}", out.display()))?;
-            std::fs::rename(&tmp, out)
-                .with_context(|| format!("failed to save {}", out.display()))?;
-            if let Ok(dir_fd) = std::fs::File::open(&dir) {
-                let _ = dir_fd.sync_all();
-            }
-            Ok::<(), anyhow::Error>(())
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        result
     }
 
     /// Return the resource alias of a usable standard-14 `WinAnsi`
@@ -424,6 +386,7 @@ fn append_overlay_stream(
 
 mod helvetica;
 mod page_tree;
+mod save;
 mod signature_font;
 mod winansi;
 
@@ -432,6 +395,8 @@ pub use winansi::{winansi_bytes, winansi_lines};
 
 #[cfg(test)]
 mod encrypted_tests;
+#[cfg(test)]
+mod incremental_tests;
 #[cfg(test)]
 mod signature_tests;
 #[cfg(test)]
