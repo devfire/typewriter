@@ -68,7 +68,7 @@ fn editing_a_restored_box_replaces_its_baked_text() {
     let mut pdf = PdfDoc::open(out.path()).unwrap();
     let mut overlays = OverlayState::default();
     overlays.restore_embedded(pdf.take_embedded_boxes());
-    assert!(!overlays.dirty, "restored boxes start clean");
+    assert!(!overlays.is_dirty(), "restored boxes start clean");
     let text_id = overlays
         .items
         .iter()
@@ -76,7 +76,6 @@ fn editing_a_restored_box_replaces_its_baked_text() {
         .unwrap()
         .id;
     overlays.item_mut(text_id).unwrap().text = "Goodbye world".to_string();
-    overlays.dirty = true;
 
     let out2 = TempFile::new("embedded-edit-out");
     pdf.bake_and_save(&mut overlays, out2.path()).unwrap();

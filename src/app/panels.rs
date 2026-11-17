@@ -58,7 +58,7 @@ impl TypewriterApp {
                     self.open_dialog();
                 }
                 if ui
-                    .add_enabled(self.overlays.dirty, big_button("Save"))
+                    .add_enabled(self.overlays.is_dirty(), big_button("Save"))
                     .on_hover_text("Bake text into the PDF  (Ctrl+S)")
                     .clicked()
                 {
@@ -184,7 +184,7 @@ impl TypewriterApp {
                     }
                     pill(ui, format!("{:.0}%", self.zoom * 100.0));
                     pill(ui, format!("{} box(es)", self.overlays.items.len()));
-                    if self.overlays.dirty {
+                    if self.overlays.is_dirty() {
                         ui.label(
                             egui::RichText::new("● Unsaved changes")
                                 .size(13.5)
@@ -421,7 +421,6 @@ impl TypewriterApp {
     ) {
         if changed {
             self.overlays.begin_gesture_with(before);
-            self.overlays.dirty = true;
         } else if !pointer_down {
             self.overlays.end_gesture();
         }

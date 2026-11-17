@@ -120,7 +120,7 @@ fn failed_incremental_save_restores_doc_and_retry_bakes_once() {
     assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 0);
     assert_eq!(overlays.items.len(), 1);
-    assert!(overlays.dirty);
+    assert!(overlays.is_dirty());
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     let text = pdf.doc.extract_text(&[1]).unwrap();

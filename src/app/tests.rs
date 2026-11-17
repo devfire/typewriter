@@ -296,7 +296,7 @@ fn opening_another_pdf_with_unsaved_boxes_prompts_instead_of_loading() {
         CloseState::Prompting(PendingAction::Open(next.path().to_path_buf()))
     );
     assert_eq!(app.overlays.items.len(), 1);
-    assert!(app.overlays.dirty);
+    assert!(app.overlays.is_dirty());
     assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
     assert_eq!(app.page_count(), 2);
 }
@@ -314,7 +314,7 @@ fn cancelling_pending_open_keeps_current_document_and_boxes() {
 
     assert_eq!(app.close_state, CloseState::Idle);
     assert_eq!(app.overlays.items.len(), 1);
-    assert!(app.overlays.dirty);
+    assert!(app.overlays.is_dirty());
     assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
     assert_eq!(app.page_count(), 2);
 }
@@ -332,7 +332,7 @@ fn discarding_pending_open_loads_new_pdf_and_clears_boxes() {
 
     assert_eq!(app.close_state, CloseState::Idle);
     assert_eq!(app.overlays.items, Vec::new());
-    assert!(!app.overlays.dirty);
+    assert!(!app.overlays.is_dirty());
     assert_eq!(app.pdf_path.as_deref(), Some(next.path()));
     assert_eq!(app.page_count(), 1);
 }
@@ -350,7 +350,7 @@ fn discarding_pending_open_to_missing_file_keeps_boxes() {
 
     assert_eq!(app.close_state, CloseState::Idle);
     assert_eq!(app.overlays.items.len(), 1);
-    assert!(app.overlays.dirty);
+    assert!(app.overlays.is_dirty());
     assert_eq!(app.pdf_path.as_deref(), Some(current.path()));
     assert_eq!(app.page_count(), 2);
 }
@@ -371,7 +371,7 @@ fn failed_save_keeps_pending_open_and_boxes() {
         CloseState::Prompting(PendingAction::Open(next.path().to_path_buf()))
     );
     assert_eq!(app.overlays.items.len(), 1);
-    assert!(app.overlays.dirty);
+    assert!(app.overlays.is_dirty());
     assert_eq!(app.pdf_path, None);
 }
 
@@ -417,7 +417,7 @@ fn confirmed_in_place_save_writes_repeatedly_without_asking_again() {
         let id = app.overlays.add(0, 10.0, 20.0, BoxKind::Text);
         app.overlays.item_mut(id).unwrap().text = text.to_string();
         assert!(app.save(SaveMode::InPlace), "save of {text} must write");
-        assert!(!app.overlays.dirty);
+        assert!(!app.overlays.is_dirty());
         // The save reloads the same path; consent must survive it,
         // or the next Ctrl+S would ask again.
         assert_eq!(app.overwrite_confirmed_for.as_deref(), Some(path.path()));
@@ -601,7 +601,7 @@ fn ctrl_s_saves_while_text_edit_has_focus_but_ctrl_c_stays_with_editor() {
     app.overwrite_confirmed_for = Some(path.path().to_path_buf());
     let id = app.overlays.add(0, 50.0, 60.0, BoxKind::Text);
     app.overlays.item_mut(id).unwrap().text = "Ada".to_string();
-    assert!(app.overlays.dirty);
+    assert!(app.overlays.is_dirty());
 
     let ctx = Context::default();
     let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(900.0, 700.0));
@@ -651,11 +651,11 @@ fn ctrl_s_saves_while_text_edit_has_focus_but_ctrl_c_stays_with_editor() {
         app.clipboard.is_none(),
         "Ctrl+C in a text editor must not copy the box"
     );
-    assert!(app.overlays.dirty);
+    assert!(app.overlays.is_dirty());
 
     run_shortcuts(&mut app, vec![key(Key::S)]);
     assert!(
-        !app.overlays.dirty,
+        !app.overlays.is_dirty(),
         "Ctrl+S in a text editor must save the document"
     );
 }

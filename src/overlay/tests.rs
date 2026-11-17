@@ -58,7 +58,7 @@ fn add_selects_and_remove_clears_selection() {
     let mut state = OverlayState::default();
     let id = state.add(0, 10.0, 20.0, BoxKind::Text);
     assert_eq!(state.selected, Some(id));
-    assert!(state.dirty);
+    assert!(state.is_dirty());
     state.remove(id);
     assert_eq!(state.selected, None);
     assert_eq!(state.items, Vec::new());
@@ -79,7 +79,7 @@ fn paste_assigns_fresh_id_selects_and_offsets() {
     let pasted = state.paste(&mut clipboard, 2, (612.0, 792.0));
     assert_ne!(pasted, src);
     assert_eq!(state.selected, Some(pasted));
-    assert!(state.dirty);
+    assert!(state.is_dirty());
     let item = state.item(pasted).unwrap();
     assert_eq!(item.kind, BoxKind::Signature);
     assert_eq!(item.page, 2);
@@ -217,11 +217,11 @@ fn undo_redo_reverses_add_remove_and_cut() {
     assert!(state.undo());
     assert_eq!(state.items, Vec::new());
     assert_eq!(state.selected, None);
-    assert!(!state.dirty);
+    assert!(!state.is_dirty());
     assert!(state.can_redo());
     assert!(state.redo());
     assert_eq!(state.items.len(), 1);
-    assert!(state.dirty);
+    assert!(state.is_dirty());
     // Delete, then Cut on the restored box, are each reversible.
     state.remove(id);
     assert_eq!(state.items, Vec::new());
@@ -263,7 +263,6 @@ fn gesture_coalesces_many_mutations_into_one_undo_step() {
         }
         item.text = format!("step {step}");
     }
-    state.dirty = true;
     state.end_gesture();
     // One undo reverts the whole drag/typing burst, not each frame.
     assert!(state.undo());
@@ -277,6 +276,40 @@ fn gesture_coalesces_many_mutations_into_one_undo_step() {
     state.end_gesture();
     assert!(state.undo());
     assert_eq!(state.item(id).unwrap().text, "");
+}
+
+#[test]
+fn deleting_the_only_added_box_returns_to_clean() {
+    let mut state = OverlayState::default();
+    let id = state.add(0, 10.0, 20.0, BoxKind::Text);
+    assert!(state.is_dirty());
+    state.remove(id);
+    assert_eq!(state.items, Vec::new());
+    assert!(!state.is_dirty(), "nothing left to save");
+}
+
+#[test]
+fn dropping_an_empty_selected_box_returns_to_clean() {
+    let mut state = OverlayState::default();
+    state.add(0, 10.0, 20.0, BoxKind::Text);
+    assert!(state.is_dirty());
+    state.drop_empty_selected();
+    assert_eq!(state.items, Vec::new());
+    assert!(!state.is_dirty(), "dropped empty box leaves nothing to save");
+}
+
+#[test]
+fn undoing_back_to_restored_boxes_returns_to_clean() {
+    let mut loaded = OverlayText::new(BoxId::default(), 0, 10.0, 20.0, BoxKind::Text);
+    loaded.text = "loaded".to_string();
+    let mut state = OverlayState::default();
+    state.restore_embedded(vec![loaded]);
+    assert!(!state.is_dirty(), "restored boxes start clean");
+    let id = state.items[0].id;
+    state.remove(id);
+    assert!(state.is_dirty(), "deleting a restored box is a change");
+    assert!(state.undo());
+    assert!(!state.is_dirty(), "undo returned to the loaded state");
 }
 
 #[test]

@@ -333,7 +333,7 @@ fn bake_drains_boxes_and_second_bake_adds_no_streams() {
     overlays.item_mut(idx).unwrap().text = "Hello".to_string();
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert_eq!(overlays.items, Vec::new());
-    assert!(!overlays.dirty);
+    assert!(!overlays.is_dirty());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
@@ -353,7 +353,7 @@ fn failed_bake_leaves_state_unchanged_and_retry_bakes_once() {
     assert!(pdf.bake_and_save(&mut overlays, &bad_out).is_err());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 0);
     assert_eq!(overlays.items.len(), 1);
-    assert!(overlays.dirty);
+    assert!(overlays.is_dirty());
     pdf.bake_and_save(&mut overlays, out.path()).unwrap();
     assert_eq!(overlays.items, Vec::new());
     assert_eq!(pdf.doc.get_page_contents(page_id).len(), 1);
@@ -371,7 +371,7 @@ fn bake_with_out_of_range_page_bails_without_dropping_boxes() {
     assert!(err.to_string().contains("page 100"), "unexpected: {err:#}");
     // Nothing baked, nothing cleared: the box survives for a retry.
     assert_eq!(overlays.items.len(), 1);
-    assert!(overlays.dirty);
+    assert!(overlays.is_dirty());
     assert_eq!(pdf.doc.get_page_contents(pdf.page_ids[0]).len(), 0);
 }
 

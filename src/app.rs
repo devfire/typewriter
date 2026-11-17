@@ -466,7 +466,7 @@ impl TypewriterApp {
         if open {
             self.open_dialog();
         }
-        if save && self.overlays.dirty {
+        if save && self.overlays.is_dirty() {
             self.save(SaveMode::InPlace);
         }
         if ctx.wants_keyboard_input() {

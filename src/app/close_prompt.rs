@@ -39,7 +39,7 @@ fn prompt_button(label: &str, style: ButtonStyle) -> egui::Button<'_> {
 impl TypewriterApp {
     /// Intercept a close request while there are unsaved changes.
     pub(super) fn guard_close(&mut self, ctx: &egui::Context) {
-        if self.close_state != CloseState::Idle || !self.overlays.dirty {
+        if self.close_state != CloseState::Idle || !self.overlays.is_dirty() {
             return;
         }
         if ctx.input(|i| i.viewport().close_requested()) {
@@ -54,7 +54,7 @@ impl TypewriterApp {
         if matches!(self.close_state, CloseState::Prompting(_)) {
             return;
         }
-        if self.overlays.dirty {
+        if self.overlays.is_dirty() {
             self.close_state = CloseState::Prompting(PendingAction::Open(path));
         } else {
             self.load(path);

@@ -290,7 +290,6 @@ impl TypewriterApp {
                     current.x_pt = x_pt;
                     current.y_top_pt = y_top_pt;
                 }
-                self.overlays.dirty = true;
             }
             if resp.drag_stopped() {
                 self.overlays.end_gesture();
@@ -366,7 +365,6 @@ impl TypewriterApp {
             if let Some(current) = self.overlays.item_mut(idx) {
                 current.width_pt = None;
             }
-            self.overlays.dirty = true;
         }
         if resize_resp.drag_started() {
             self.overlays.begin_gesture();
@@ -381,7 +379,6 @@ impl TypewriterApp {
                 let base = current.width_pt.unwrap_or(width_pt);
                 current.width_pt = Some((base + delta_pt).max(24.0));
             }
-            self.overlays.dirty = true;
         }
         if resize_resp.drag_stopped() {
             self.overlays.end_gesture();

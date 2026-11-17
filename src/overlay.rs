@@ -138,7 +138,10 @@ pub struct OverlayState {
     pub items: Vec<OverlayText>,
     pub selected: Option<BoxId>,
     next_id: u64,
-    pub dirty: bool,
+    /// Snapshot of `items` as last loaded / successfully baked.
+    /// Dirtiness is derived ([`Self::is_dirty`]), never set by hand,
+    /// so it cannot disagree with the actual boxes.
+    clean: Vec<OverlayText>,
     history: History,
 }
 
@@ -168,6 +171,15 @@ impl OverlayState {
         self.history.end_gesture(&self.items);
     }
 
+    /// Whether the live boxes differ from the clean snapshot taken
+    /// at load / successful bake. Editing a box and reverting it,
+    /// deleting the only added box, or undoing back to the loaded
+    /// state all read clean again.
+    #[must_use]
+    pub fn is_dirty(&self) -> bool {
+        self.items != self.clean
+    }
+
     #[must_use]
     pub fn can_undo(&self) -> bool {
         self.history.can_undo()
@@ -179,9 +191,7 @@ impl OverlayState {
     }
 
     /// Restore the previous `items` snapshot. Returns `false` when
-    /// there is nothing to undo. Dirty is recomputed from the
-    /// restored items: undoing back to no boxes means nothing is
-    /// left to bake.
+    /// there is nothing to undo.
     pub fn undo(&mut self) -> bool {
         if !self.history.undo(&mut self.items) {
             return false;
@@ -200,14 +210,12 @@ impl OverlayState {
         true
     }
 
-    /// Common post-restore fixups: a selection pointing at a box the
-    /// restored snapshot does not contain is dropped, and dirty
-    /// reflects whether anything remains to bake.
+    /// Common post-restore fixup: a selection pointing at a box the
+    /// restored snapshot does not contain is dropped.
     fn after_restore(&mut self) {
         if self.selected.is_some_and(|sel| self.item(sel).is_none()) {
             self.selected = None;
         }
-        self.dirty = !self.items.is_empty();
     }
 
     fn fresh_id(&mut self) -> BoxId {
@@ -223,7 +231,6 @@ impl OverlayState {
         self.items
             .push(OverlayText::new(id, page, x_pt, y_top_pt, kind));
         self.selected = Some(id);
-        self.dirty = true;
         id
     }
 
@@ -247,7 +254,6 @@ impl OverlayState {
         if self.selected == Some(id) {
             self.selected = None;
         }
-        self.dirty = true;
     }
 
     /// Snapshot of the selected box (text or signature, with its
@@ -298,7 +304,6 @@ impl OverlayState {
         item.id = id;
         self.items.push(item);
         self.selected = Some(id);
-        self.dirty = true;
         id
     }
 
@@ -342,16 +347,16 @@ impl OverlayState {
             item.id = self.fresh_id();
         }
         self.items = items;
+        self.clean = self.items.clone();
         self.selected = None;
-        self.dirty = false;
         self.history.clear();
     }
 
     /// Clear everything after a successful bake.
     pub fn clear_baked(&mut self) {
         self.items.clear();
+        self.clean.clear();
         self.selected = None;
-        self.dirty = false;
         // Baked (or newly loaded) boxes must not be resurrected by
         // undo: they are already in the PDF / no longer on screen.
         self.history.clear();
