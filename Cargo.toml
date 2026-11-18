@@ -2,6 +2,8 @@
 name = "typewriter"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/devfire/typewriter"
+license = "MIT"
 
 # Binary crate: caret requirements let `cargo update` pick up
 # semver-compatible fixes; the committed Cargo.lock guarantees
@@ -24,3 +26,8 @@ ttf-parser = "0.25.1"
 # CI with `-D warnings`) instead of by prose alone.
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
