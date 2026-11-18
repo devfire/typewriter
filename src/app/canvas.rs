@@ -452,7 +452,8 @@ fn paint_line_at_baseline(
 }
 
 /// On-page box width in points: widest line plus padding. Text uses
-/// the baked Helvetica metrics so the auto-fit frame matches the
+/// the baked font's metrics (`pdf::text_box_width_pt`: Helvetica or
+/// embedded Liberation Sans) so the auto-fit frame matches the
 /// saved PDF; signatures use egui's script-font metrics, as only the
 /// preview renders that face.
 fn measured_width_pt(
@@ -469,7 +470,7 @@ fn measured_width_pt(
     let widest_pt = lines
         .iter()
         .map(|line| match item.kind {
-            BoxKind::Text => crate::pdf::helvetica_width_pt(line, item.size_pt),
+            BoxKind::Text => crate::pdf::text_box_width_pt(item, line),
             BoxKind::Signature => line_width_pt(ui, line, font, zoom),
         })
         .fold(0.0_f32, f32::max);
@@ -506,7 +507,7 @@ fn line_width_pt(ui: &egui::Ui, line: &str, font: &egui::FontId, zoom: f32) -> f
 }
 
 /// Lines as drawn: single flattened line for signatures, wrapped for
-/// fixed-width text. Text wraps with the same Helvetica metrics as
+/// fixed-width text. Text wraps with the same font metrics as
 /// the PDF baker (`pdf::box_operations`), so preview line breaks match the
 /// saved file exactly and never depend on zoom or the UI font.
 pub(super) fn box_display_lines(item: &OverlayText) -> Vec<String> {
@@ -516,7 +517,7 @@ pub(super) fn box_display_lines(item: &OverlayText) -> Vec<String> {
             let lines = overlay::logical_lines(&item.text);
             match item.width_pt {
                 Some(width) => overlay::wrap_lines(&lines, width.max(24.0), &|line: &str| {
-                    crate::pdf::helvetica_width_pt(line, item.size_pt)
+                    crate::pdf::text_box_width_pt(item, line)
                 }),
                 None => lines,
             }

@@ -43,7 +43,7 @@ fn two_lines_produce_two_tj_and_one_td() {
     );
     item.text = "a\nb".to_string();
     item.color = [0, 0, 255];
-    let ops = box_operations(&item, b"F_TW", &test_geom(), None);
+    let ops = box_operations(&item, b"F_TW", &test_geom(), None, None);
     let operators: Vec<&str> = ops.iter().map(|op| op.operator.as_str()).collect();
     assert_eq!(
         operators,
@@ -82,7 +82,7 @@ fn helvetica_width_uses_standard_metrics() {
 #[test]
 fn fixed_width_text_wraps_at_word_boundaries() {
     let item = fixed_width_item("aaaa bbbb cccc", 30.0);
-    let ops = box_operations(&item, b"F_TW", &test_geom(), None);
+    let ops = box_operations(&item, b"F_TW", &test_geom(), None, None);
     assert_eq!(
         tj_strings(&ops),
         vec![b"aaaa".to_vec(), b"bbbb".to_vec(), b"cccc".to_vec()]
@@ -96,9 +96,9 @@ fn fixed_width_text_wraps_at_word_boundaries() {
 #[test]
 fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
     let mut item = fixed_width_item("  a\tb   c", 200.0);
-    let fixed_ops = box_operations(&item, b"F_TW", &test_geom(), None);
+    let fixed_ops = box_operations(&item, b"F_TW", &test_geom(), None, None);
     item.width_pt = None;
-    let auto_ops = box_operations(&item, b"F_TW", &test_geom(), None);
+    let auto_ops = box_operations(&item, b"F_TW", &test_geom(), None, None);
     assert_eq!(tj_strings(&fixed_ops), vec![b"  a    b   c".to_vec()]);
     assert_eq!(tj_strings(&fixed_ops), tj_strings(&auto_ops));
 }
@@ -106,7 +106,7 @@ fn fixed_width_and_auto_width_preserve_spaces_and_expand_tabs_consistently() {
 #[test]
 fn fixed_width_long_word_is_hard_broken() {
     let item = fixed_width_item("aaaaaaaaaa", 30.0);
-    let ops = box_operations(&item, b"F_TW", &test_geom(), None);
+    let ops = box_operations(&item, b"F_TW", &test_geom(), None, None);
     assert_eq!(
         tj_strings(&ops),
         vec![b"aaaa".to_vec(), b"aaaa".to_vec(), b"aa".to_vec()]
@@ -128,6 +128,55 @@ fn fixed_width_bake_wraps_text_in_saved_content() {
     for word in ["aaaa", "bbbb", "cccc"] {
         assert!(text.contains(word), "wrapped word {word} missing: {text}");
     }
+}
+
+#[test]
+fn non_winansi_text_extracts_verbatim_from_saved_file() {
+    // Regression for #60: Cyrillic baked as `?` while the embedded
+    // payload (and preview) kept the original. Extraction here is
+    // from the saved file via lopdf, independent of that payload.
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let cyrillic = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(cyrillic).unwrap().text =
+        "Name: \u{041B}\u{0435}\u{043D}\u{0430}".to_string();
+    let control = overlays.add(0, 72.0, 120.0, BoxKind::Text);
+    overlays.item_mut(control).unwrap().text = "Ren\u{e9}e".to_string();
+    pdf.bake_and_save(&mut overlays, out.path()).unwrap();
+    let saved = std::fs::read(out.path()).unwrap();
+    let exported = Document::load_mem(&saved)
+        .unwrap()
+        .extract_text(&[1])
+        .unwrap();
+    assert!(
+        exported.contains("Name: \u{041B}\u{0435}\u{043D}\u{0430}"),
+        "Cyrillic must extract verbatim, got: {exported:?}"
+    );
+    assert!(
+        exported.contains("Ren\u{e9}e"),
+        "WinAnsi control must extract verbatim, got: {exported:?}"
+    );
+    assert!(
+        !exported.contains("????"),
+        "lossy bake leaked: {exported:?}"
+    );
+}
+
+#[test]
+fn text_without_liberation_glyph_fails_save_without_writing() {
+    // CJK has no Liberation Sans glyph: the save must refuse visibly
+    // (leaving overlays intact for a fix-and-retry) rather than bake `?`.
+    let (mut pdf, out) = fixture_pdf();
+    let mut overlays = OverlayState::default();
+    let idx = overlays.add(0, 72.0, 72.0, BoxKind::Text);
+    overlays.item_mut(idx).unwrap().text = "Name: \u{4e2d}".to_string();
+    let err = pdf.bake_and_save(&mut overlays, out.path()).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("U+4E2D"),
+        "error must name the character: {err:#}"
+    );
+    assert_eq!(overlays.items.len(), 1, "failed save must keep the box");
+    assert!(!out.path().exists(), "failed save must not write a file");
 }
 
 /// Operands of the first `Tm` operator in a decoded content stream.

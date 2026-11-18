@@ -77,7 +77,7 @@ fn used_glyphs(face: &Face<'_>, boxes: &[&OverlayText]) -> BTreeMap<u16, (char, 
 }
 
 /// `ToUnicode` `CMap` text mapping glyph ids back to their source text.
-fn to_unicode_cmap(used: &BTreeMap<u16, String>) -> Vec<u8> {
+pub(super) fn to_unicode_cmap(used: &BTreeMap<u16, String>) -> Vec<u8> {
     let mut out = String::from(
         "/CIDInit /ProcSet findresource begin\n\
          12 dict begin\n\

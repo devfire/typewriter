@@ -7,7 +7,7 @@
 //! document is mutated directly; on failure the pre-save logical
 //! document is restored (see `bake_and_save`).
 
-use super::{PdfDoc, append_overlay_stream, box_operations, signature_font};
+use super::{PdfDoc, append_overlay_stream, box_operations, liberation_font, signature_font};
 use crate::geometry::PageGeometry;
 use crate::overlay::{BoxKind, OverlayText};
 use anyhow::{Context, Result, bail};
@@ -25,11 +25,13 @@ impl PdfDoc {
         pages: &[PageGeometry],
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
         sig_font: Option<&signature_font::SignatureFont>,
+        text_font: Option<&liberation_font::LiberationFont>,
     ) -> Result<(
         Vec<super::embedded::BakedStream>,
         std::collections::BTreeSet<ObjectId>,
     )> {
         let shared_sig_font = sig_font.map(|font| font.embed(doc));
+        let shared_text_font = text_font.map(|font| font.embed(doc));
         let mut touched = std::collections::BTreeSet::new();
         let mut baked = Vec::with_capacity(by_page.len());
         for (page, boxes) in by_page {
@@ -43,11 +45,26 @@ impl PdfDoc {
                 );
             };
             let page_id = geom.id;
-            let needs_text = boxes.iter().any(|item| item.kind == BoxKind::Text);
+            let needs_text = boxes
+                .iter()
+                .any(|item| item.kind == BoxKind::Text && !liberation_font::needs_liberation(item));
+            let needs_unicode_text = boxes
+                .iter()
+                .any(|item| item.kind == BoxKind::Text && liberation_font::needs_liberation(item));
             let needs_sig = boxes.iter().any(|item| item.kind == BoxKind::Signature);
             let text_alias = needs_text
                 .then(|| Self::ensure_helvetica(doc, page_id, &mut touched))
                 .transpose()?;
+            let unicode_alias = if needs_unicode_text && let Some(type0_id) = shared_text_font {
+                Some(Self::ensure_liberation(
+                    doc,
+                    page_id,
+                    type0_id,
+                    &mut touched,
+                )?)
+            } else {
+                None
+            };
             let sig_alias = if needs_sig && let Some(type0_id) = shared_sig_font {
                 Some(Self::ensure_signature(
                     doc,
@@ -61,14 +78,19 @@ impl PdfDoc {
             let mut operations = Vec::new();
             for &item in boxes {
                 match item.kind {
+                    BoxKind::Text if liberation_font::needs_liberation(item) => {
+                        if let (Some(alias), Some(font)) = (unicode_alias.as_ref(), text_font) {
+                            operations.extend(box_operations(item, alias, geom, None, Some(font)));
+                        }
+                    }
                     BoxKind::Text => {
                         if let Some(alias) = text_alias.as_ref() {
-                            operations.extend(box_operations(item, alias, geom, None));
+                            operations.extend(box_operations(item, alias, geom, None, None));
                         }
                     }
                     BoxKind::Signature => {
                         if let (Some(alias), Some(font)) = (sig_alias.as_ref(), sig_font) {
-                            operations.extend(box_operations(item, alias, geom, Some(font)));
+                            operations.extend(box_operations(item, alias, geom, Some(font), None));
                         }
                     }
                 }
@@ -89,11 +111,12 @@ impl PdfDoc {
         by_page: &BTreeMap<usize, Vec<&OverlayText>>,
         baked_boxes: &[OverlayText],
         sig_font: Option<&signature_font::SignatureFont>,
+        text_font: Option<&liberation_font::LiberationFont>,
         out: &Path,
     ) -> Result<Vec<u8>> {
         let max_id_before = self.doc.max_id;
         let (baked_streams, mut touched) =
-            Self::bake_pages(&mut self.doc, &self.pages, by_page, sig_font)?;
+            Self::bake_pages(&mut self.doc, &self.pages, by_page, sig_font, text_font)?;
         // Embed the just-baked boxes and their streams' ids and
         // hashes so the saved file reopens editable; part of the
         // same update, so payload and baked streams always land in

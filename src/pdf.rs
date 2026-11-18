@@ -222,6 +222,22 @@ impl PdfDoc {
         } else {
             Some(signature_font::SignatureFont::prepare(&all_sig_boxes)?)
         };
+        // Every text box `WinAnsi` cannot represent: one shared
+        // embedded Liberation Sans subset serves them all. Prepared
+        // before any baking, so a character that font lacks fails
+        // the save with overlays untouched instead of baking `?`.
+        let all_unicode_text_boxes: Vec<&OverlayText> = by_page
+            .values()
+            .flat_map(|boxes| boxes.iter().copied())
+            .filter(|item| item.kind == BoxKind::Text && liberation_font::needs_liberation(item))
+            .collect();
+        let text_font = if all_unicode_text_boxes.is_empty() {
+            None
+        } else {
+            Some(liberation_font::LiberationFont::prepare(
+                &all_unicode_text_boxes,
+            )?)
+        };
         // Exactly the boxes being baked, kept for the embedded
         // payload that makes the saved file re-editable. Rejected
         // here — before baking anything — when the next open could
@@ -237,8 +253,13 @@ impl PdfDoc {
             let mut staged = self.doc.clone();
             // A full write serializes the whole staged document, so
             // the incremental update's touched set is not needed.
-            let (baked_streams, mut dropped) =
-                Self::bake_pages(&mut staged, &self.pages, &by_page, sig_font.as_ref())?;
+            let (baked_streams, mut dropped) = Self::bake_pages(
+                &mut staged,
+                &self.pages,
+                &by_page,
+                sig_font.as_ref(),
+                text_font.as_ref(),
+            )?;
             embedded::store(&mut staged, &baked_boxes, &baked_streams, &mut dropped)?;
             let mut saved = Vec::new();
             staged
@@ -258,7 +279,13 @@ impl PdfDoc {
             // the old baked streams from the on-disk revision.
             let doc_backup = (!self.dirty.is_empty()).then(|| self.doc.clone());
             let dirty_backup = self.dirty.clone();
-            match self.bake_and_save_incremental(&by_page, &baked_boxes, sig_font.as_ref(), out) {
+            match self.bake_and_save_incremental(
+                &by_page,
+                &baked_boxes,
+                sig_font.as_ref(),
+                text_font.as_ref(),
+                out,
+            ) {
                 Ok(saved) => saved,
                 Err(err) => {
                     if let Some(backup) = doc_backup {
@@ -346,6 +373,29 @@ impl PdfDoc {
         insert_font_entry(doc, page_id, &alias, type0_id, touched)?;
         Ok(alias)
     }
+
+    /// Return the resource alias on `page_id` for the shared embedded
+    /// Liberation Sans font `type0_id`, reusing an existing alias for
+    /// that exact font object and inserting a new `F_TXT` entry
+    /// otherwise (same exact-object rule as `ensure_signature`).
+    fn ensure_liberation(
+        doc: &mut Document,
+        page_id: ObjectId,
+        type0_id: ObjectId,
+        touched: &mut std::collections::BTreeSet<ObjectId>,
+    ) -> Result<Vec<u8>> {
+        if let Some(fonts) = effective_font_dict(doc, page_id) {
+            for (alias, value) in fonts {
+                if value.as_reference().is_ok_and(|id| id == type0_id) {
+                    return Ok(alias.clone());
+                }
+            }
+        }
+        let fonts = effective_fonts(doc, page_id);
+        let alias = free_alias(&fonts, "F_TXT");
+        insert_font_entry(doc, page_id, &alias, type0_id, touched)?;
+        Ok(alias)
+    }
 }
 
 /// Whether `font` is an unmodified standard-14 Type1 Helvetica using
@@ -399,6 +449,7 @@ fn box_operations(
     alias: &[u8],
     geom: &PageGeometry,
     sig_font: Option<&signature_font::SignatureFont>,
+    text_font: Option<&liberation_font::LiberationFont>,
 ) -> Vec<Operation> {
     let size = item.size_pt;
     let leading = LEADING * size;
@@ -420,12 +471,25 @@ fn box_operations(
         Operation::new("Tf", vec![Object::Name(alias.to_vec()), Object::Real(size)]),
         Operation::new("Tm", tm),
     ];
-    let lines: Vec<Object> = match (item.kind, sig_font) {
-        (BoxKind::Signature, Some(font)) => vec![Object::String(
+    let lines: Vec<Object> = match (item.kind, sig_font, text_font) {
+        (BoxKind::Signature, Some(font), _) => vec![Object::String(
             font.encode_hex(&item.signature_line()),
             StringFormat::Hexadecimal,
         )],
-        (BoxKind::Text, _) if item.width_pt.is_some() => {
+        (BoxKind::Text, _, Some(font)) if liberation_font::needs_liberation(item) => {
+            let logical = crate::overlay::logical_lines(&item.text);
+            let wrapped = match item.width_pt {
+                Some(width) => wrap_lines(&logical, width.max(24.0), &|line: &str| {
+                    font.width_pt(line, size)
+                }),
+                None => logical,
+            };
+            wrapped
+                .iter()
+                .map(|line| Object::String(font.encode_hex(line), StringFormat::Hexadecimal))
+                .collect()
+        }
+        (BoxKind::Text, _, _) if item.width_pt.is_some() => {
             // Fixed width: wrap with real Helvetica metrics so the
             // baked lines fit the box the user sized. The clamp
             // mirrors the preview's minimum box width.
@@ -512,6 +576,7 @@ mod bounded;
 mod corpus_tests;
 mod embedded;
 mod helvetica;
+mod liberation_font;
 mod page_tree;
 mod save;
 mod signature_font;
@@ -519,7 +584,25 @@ mod winansi;
 
 #[allow(unused_imports)]
 pub(crate) use helvetica::helvetica_width_pt;
+#[allow(unused_imports)]
+pub(crate) use liberation_font::FONT_BYTES;
+pub(crate) use liberation_font::liberation_width_pt;
 pub use winansi::{winansi_bytes, winansi_lines};
+
+/// Width of one line of a text box in points, in the font the box
+/// will bake in: Helvetica for `WinAnsi` text, Liberation Sans for
+/// text that needs the embedded font. Shared by the preview and the
+/// baker so their line breaks match.
+// Used by the binary's preview; the library target has no caller.
+#[allow(dead_code)]
+#[must_use]
+pub(crate) fn text_box_width_pt(item: &OverlayText, line: &str) -> f32 {
+    if liberation_font::needs_liberation(item) {
+        liberation_width_pt(line, item.size_pt)
+    } else {
+        helvetica::helvetica_width_pt(line, item.size_pt)
+    }
+}
 
 #[cfg(test)]
 mod embedded_tests;

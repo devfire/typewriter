@@ -25,20 +25,29 @@ pub fn winansi_bytes(s: &str) -> Vec<u8> {
             '\n' => out.push(b'\n'),
             '\t' => out.extend_from_slice(crate::overlay::TAB_SPACES.as_bytes()),
             c if (c as u32) < 0x20 => {}
-            c => out.push(winansi_char(c)),
+            c => out.push(winansi_char(c).unwrap_or(b'?')),
         }
     }
     out
 }
 
-fn winansi_char(c: char) -> u8 {
+/// Whether `text` can be baked losslessly as `WinAnsi` Helvetica:
+/// every character that survives [`winansi_bytes`] (controls other
+/// than `\n`/`\t`/`\r` are dropped there, as before) has a byte.
+#[must_use]
+pub fn is_winansi_encodable(text: &str) -> bool {
+    text.chars()
+        .all(|c| matches!(c, '\r' | '\n' | '\t') || (c as u32) < 0x20 || winansi_char(c).is_some())
+}
+
+fn winansi_char(c: char) -> Option<u8> {
     let code = c as u32;
     if (0x20..=0x7E).contains(&code) || (0xA0..=0xFF).contains(&code) {
         #[allow(clippy::cast_possible_truncation)]
-        return code as u8;
+        return Some(code as u8);
     }
     // WinAnsi 0x80..=0x9F punctuation block.
-    match c {
+    Some(match c {
         '\u{20AC}' => 0x80,
         '\u{201A}' => 0x82,
         '\u{0192}' => 0x83,
@@ -66,6 +75,6 @@ fn winansi_char(c: char) -> u8 {
         '\u{0153}' => 0x9C,
         '\u{017E}' => 0x9E,
         '\u{0178}' => 0x9F,
-        _ => b'?',
-    }
+        _ => return None,
+    })
 }

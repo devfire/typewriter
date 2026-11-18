@@ -4,16 +4,17 @@
 //! on-page preview draws them in Liberation Sans (metrically
 //! compatible with Arial/Helvetica) instead of egui's default
 //! proportional font: glyph advances then match
-//! `pdf::helvetica_width_pt`, and the lines wrapped by that measure
-//! also *look* wrapped at the same place. Preview only — the baked
-//! PDF still uses Helvetica itself and embeds nothing for text.
+//! the baked font's width measure, and the lines wrapped by that
+//! measure also *look* wrapped at the same place. The baked PDF
+//! uses Helvetica for `WinAnsi` text and embeds this face (subset)
+//! for text `WinAnsi` cannot represent (see `pdf::liberation_font`).
 //! Licensed under the SIL Open Font License 1.1 (see
 //! `assets/OFL-LiberationSans.txt`).
 
 use eframe::egui;
 
 /// Raw TrueType bytes, registered with egui by `app::theme`.
-pub const FONT_BYTES: &[u8] = include_bytes!("../assets/LiberationSans-Regular.ttf");
+pub const FONT_BYTES: &[u8] = crate::pdf::FONT_BYTES;
 
 /// Key into egui's `font_data` map.
 pub const FONT_KEY: &str = "liberation-sans";
