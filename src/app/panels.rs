@@ -62,7 +62,7 @@ impl TypewriterApp {
                     .on_hover_text("Open a PDF  (Ctrl+O)")
                     .clicked()
                 {
-                    self.open_dialog();
+                    self.open_dialog(ui.ctx());
                 }
                 if ui
                     .add_enabled(self.overlays.is_dirty(), big_button("Save"))
@@ -75,7 +75,7 @@ impl TypewriterApp {
                     .add_enabled(self.page_count() > 0, big_button("Save As…"))
                     .clicked()
                 {
-                    self.save(SaveMode::SaveAs);
+                    self.save_as_dialog(ui.ctx());
                 }
             });
         });

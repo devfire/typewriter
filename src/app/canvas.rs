@@ -76,7 +76,7 @@ impl TypewriterApp {
                 .on_hover_text("Open a PDF  (Ctrl+O)")
                 .clicked()
             {
-                self.open_dialog();
+                self.open_dialog(ui.ctx());
             }
             ui.add_space(14.0);
             ui.label(
@@ -107,8 +107,12 @@ impl TypewriterApp {
             self.fit_pending = false;
         }
         let zoom = self.zoom;
-        let texture = match self.renderer.render_page(ctx, pdf, page, zoom) {
-            Ok(texture) => Some(texture),
+        let render_bytes = Arc::clone(&doc.render_bytes);
+        let texture = match self
+            .renderer
+            .render_page(ctx, pdf, render_bytes, page, zoom)
+        {
+            Ok(texture) => texture,
             Err(err) => {
                 self.status = format!("Render failed: {err:#}");
                 None

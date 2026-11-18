@@ -28,6 +28,7 @@ fn test_app() -> TypewriterApp {
         overwrite_confirmed_for: None,
         box_layouts: std::collections::HashMap::new(),
         canvas_view: None,
+        dialog_rx: None,
     }
 }
 

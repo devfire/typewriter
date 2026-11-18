@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 mod canvas;
 mod close_prompt;
+mod dialogs;
 mod panels;
 #[cfg(test)]
 mod tests;
@@ -96,7 +97,6 @@ pub(super) enum SaveMode {
     /// caller (the unsaved-changes prompt) already obtained the
     /// user's explicit Save choice for this document.
     InPlaceConfirmed,
-    SaveAs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +160,9 @@ pub struct TypewriterApp {
     box_layouts: HashMap<BoxId, canvas::CachedBoxLayout>,
     /// Last rendered canvas geometry; see [`CanvasView`].
     canvas_view: Option<CanvasView>,
+    /// Result channel of the outstanding native file dialog, if
+    /// any (see `app::dialogs`); polled every frame.
+    dialog_rx: Option<std::sync::mpsc::Receiver<dialogs::DialogOutcome>>,
 }
 
 impl TypewriterApp {
@@ -184,6 +187,7 @@ impl TypewriterApp {
             overwrite_confirmed_for: None,
             box_layouts: HashMap::new(),
             canvas_view: None,
+            dialog_rx: None,
         };
         // A failed CLI-open leaves the reason in the status bar; the
         // GUI still opens so the user can pick another file.
@@ -305,77 +309,48 @@ impl TypewriterApp {
         self.status = format!("Saved {}", target.display());
     }
 
-    fn open_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("PDF", &["pdf"])
-            .pick_file()
-        {
-            self.begin_open(path);
-        }
-    }
-
-    /// Bake overlays into the PDF. Returns `true` only when the file
-    /// was actually written (dialog not cancelled, overwrite confirmed,
-    /// write succeeded) — the close prompt relies on this to decide
-    /// whether closing may proceed.
     fn save(&mut self, mode: SaveMode) -> bool {
         if self.pdf_doc.is_none() {
             return false;
         }
         self.overlays.drop_empty_selected();
-        let target = if mode == SaveMode::SaveAs {
-            let mut dialog = rfd::FileDialog::new().add_filter("PDF", &["pdf"]);
-            if let Some(name) = self
-                .pdf_path
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-            {
-                dialog = dialog.set_file_name(name);
-            }
-            match dialog.save_file() {
-                Some(path) => {
-                    // Picking the destination already consents to
-                    // overwriting it; later in-place saves of that
-                    // file don't re-ask.
-                    self.overwrite_confirmed_for = Some(path.clone());
-                    path
-                }
-                None => return false,
-            }
-        } else {
-            let Some(source) = self.pdf_path.clone() else {
-                return false;
-            };
-            // `InPlaceConfirmed`: the unsaved-changes prompt's Save
-            // choice already consents to the overwrite. Otherwise
-            // only the first in-place overwrite per file asks.
-            if mode != SaveMode::InPlaceConfirmed
-                && overwrite_needs_confirmation(self.overwrite_confirmed_for.as_deref(), &source)
-            {
-                let confirmed = rfd::MessageDialog::new()
-                    .set_level(rfd::MessageLevel::Warning)
-                    .set_title("Overwrite PDF?")
-                    .set_description(format!(
-                        "Save baked text into {}? This appends an incremental update to the file.",
-                        source.display()
-                    ))
-                    .set_buttons(rfd::MessageButtons::YesNo)
-                    .show();
-                if confirmed != rfd::MessageDialogResult::Yes {
-                    return false;
-                }
-            }
-            self.overwrite_confirmed_for = Some(source.clone());
-            source
+        let Some(source) = self.pdf_path.clone() else {
+            return false;
         };
+        // `InPlaceConfirmed`: the unsaved-changes prompt's Save
+        // choice already consents to the overwrite. Otherwise
+        // only the first in-place overwrite per file asks.
+        if mode != SaveMode::InPlaceConfirmed
+            && overwrite_needs_confirmation(self.overwrite_confirmed_for.as_deref(), &source)
+        {
+            let confirmed = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Overwrite PDF?")
+                .set_description(format!(
+                    "Save baked text into {}? This appends an incremental update to the file.",
+                    source.display()
+                ))
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show();
+            if confirmed != rfd::MessageDialogResult::Yes {
+                return false;
+            }
+        }
+        self.overwrite_confirmed_for = Some(source.clone());
+        self.bake_to(&source)
+    }
+
+    /// Bake overlays into `target` and refresh the preview. Returns
+    /// `true` only when the file was actually written: the close
+    /// prompt relies on this to decide whether closing may proceed.
+    pub(super) fn bake_to(&mut self, target: &Path) -> bool {
         let result = match self.pdf_doc.as_mut() {
-            Some(doc) => doc.bake_and_save(&mut self.overlays, &target),
+            Some(doc) => doc.bake_and_save(&mut self.overlays, target),
             None => return false,
         };
         match result {
             Ok(()) => {
-                self.refresh_after_save(&target);
+                self.refresh_after_save(target);
                 true
             }
             Err(err) => {
@@ -510,7 +485,7 @@ impl TypewriterApp {
             )
         });
         if open {
-            self.open_dialog();
+            self.open_dialog(ctx);
         }
         if save && self.overlays.is_dirty() {
             self.save(SaveMode::InPlace);
@@ -604,6 +579,7 @@ impl TypewriterApp {
 
 impl eframe::App for TypewriterApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.poll_dialog_outcomes();
         self.guard_close(ctx);
         self.handle_shortcuts(ctx);
         self.toolbar(ctx);
